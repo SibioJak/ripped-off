@@ -3,7 +3,7 @@ extends RefCounted
 ## Enemy definitions AS DATA. One dictionary per type: movement,
 ## scoring and look. Pirate behaviour reads its numbers from here,
 ## so a new class is a new dictionary entry, not new code.
-## M1 ships exactly one type: the grabber.
+## M1 shipped the grabber; M2 adds the gunner through this system.
 
 const DEFS: Dictionary = {
 	"grabber": {
@@ -14,6 +14,18 @@ const DEFS: Dictionary = {
 		"radius": 13.0,
 		"color": Color(1.0, 0.38, 0.3, 1.0), # coral red
 		"role": "thief",
+	},
+	"gunner": {
+		"speed": 150.0, # entry speed while flying to its standoff point
+		"score": 150, # base kill points (before multiplier)
+		"shards": 4, # salvage shards burst on death
+		"radius": 13.0,
+		"color": Color(0.66, 0.42, 1.0, 1.0), # violet
+		"role": "shooter",
+		"fire_interval": 2.2, # seconds between shots at rank 0 (rank scales it)
+		"standoff_min": 260.0, # preferred range band from the depot centre
+		"standoff_max": 340.0,
+		"strafe_speed": 55.0, # tangential drift while holding the band
 	},
 }
 
