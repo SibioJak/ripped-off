@@ -1,0 +1,136 @@
+class_name Hud
+extends Node2D
+## All text and screen furniture: the in-run HUD bar, the wave
+## banner, the title screen (with the FULL controls list — every
+## control the game accepts, house rule), the game-over screen and
+## the pause note. Main pushes plain values in each frame; this
+## script only draws, so it never reaches into game state.
+
+var score: int = 0
+var multiplier: float = 1.0
+var grace_frac: float = 0.0 # 1 = decay grace full, 0 = decaying
+var wave: int = 0
+var canisters_left: int = 8
+var best_score: int = 0
+var best_wave: int = 0
+var mode: int = 0 # mirrors Main.GameState: 0 title, 1 running, 2 game over
+var paused: bool = false
+var banner_text: String = ""
+var banner_frac: float = 0.0 # 1 at banner start, fades to 0
+
+const MODE_TITLE: int = 0
+const MODE_RUNNING: int = 1
+const MODE_GAMEOVER: int = 2
+
+var _font: Font = null
+
+
+func _ready() -> void:
+	z_index = 40
+	_font = ThemeDB.fallback_font
+
+
+func _draw() -> void:
+	if _font == null:
+		return
+	if mode == MODE_RUNNING:
+		_draw_run_hud()
+		if paused:
+			_draw_center_lines(["PAUSED"], 44, Tuning.COLOR_TEXT)
+		elif banner_frac > 0.0 and banner_text != "":
+			var col: Color = Color(Tuning.COLOR_TEXT,
+				clampf(banner_frac * 1.6, 0.0, 1.0))
+			_draw_center_lines([banner_text], 40, col)
+	elif mode == MODE_TITLE:
+		_draw_title()
+	elif mode == MODE_GAMEOVER:
+		_draw_run_hud()
+		_draw_gameover()
+
+
+func _draw_run_hud() -> void:
+	_text(Vector2(52.0, 32.0), "SCORE %06d" % score, 22, Tuning.COLOR_TEXT)
+	# Multiplier with its decay bar underneath.
+	var mx: float = 330.0
+	_text(Vector2(mx, 32.0), "x%.2f" % multiplier, 22,
+		Tuning.COLOR_SHARD.lerp(Color.WHITE, 0.25))
+	var bar_w: float = 110.0
+	draw_rect(Rect2(mx, 40.0, bar_w, 4.0), Color(Tuning.COLOR_TEXT_DIM, 0.35))
+	var fill: float = bar_w * clampf(
+		(multiplier - 1.0) / maxf(Tuning.MULT_CAP - 1.0, 0.01), 0.0, 1.0)
+	draw_rect(Rect2(mx, 40.0, fill, 4.0), Tuning.COLOR_SHARD)
+	draw_rect(Rect2(mx, 47.0, bar_w * grace_frac, 3.0),
+		Color(Tuning.COLOR_DEPOT, 0.8))
+	_text(Vector2(1030.0, 32.0), "WAVE %d" % wave, 22, Tuning.COLOR_TEXT)
+	# Canister pips.
+	for i: int in range(Tuning.SLOT_COUNT):
+		var px: float = 1130.0 + float(i) * 13.0
+		var col: Color = Tuning.COLOR_CANISTER if i < canisters_left \
+			else Color(Tuning.COLOR_TEXT_DIM, 0.3)
+		draw_circle(Vector2(px, 25.0), 4.5, col)
+
+
+func _draw_title() -> void:
+	var cx: float = Tuning.VIEW_W * 0.5
+	_text_center(Vector2(cx, 190.0), "RIPPED-OFF", 84, Tuning.COLOR_DEPOT)
+	_text_center(Vector2(cx, 246.0),
+		"Defend the canisters. Feed the multiplier.", 24, Tuning.COLOR_TEXT)
+	if best_score > 0:
+		_text_center(Vector2(cx, 300.0),
+			"BEST  %06d   —   WAVE %d" % [best_score, best_wave], 22,
+			Tuning.COLOR_SHARD)
+	var lines: Array[String] = [
+		"CONTROLS",
+		"Move ............ W A S D  /  Left Stick",
+		"Aim ............. Mouse  /  Right Stick",
+		"Fire ............ Hold Left Mouse  /  Space  /  Right Trigger  /  A Button",
+		"Twin-stick ...... Arrow Keys aim and fire",
+		"Pause ........... Esc  /  P  /  Start Button",
+		"",
+		"Ram a pirate at speed to kill it. Tow loose canisters home.",
+		"The run ends when all 8 canisters are gone.",
+		"",
+		"Fire to play",
+	]
+	var y: float = 356.0
+	for line: String in lines:
+		var col: Color = Tuning.COLOR_TEXT
+		if line == "CONTROLS":
+			col = Tuning.COLOR_DEPOT
+		elif line == "Fire to play":
+			col = Tuning.COLOR_SHARD
+		_text_center(Vector2(cx, y), line, 21, col)
+		y += 30.0
+
+
+func _draw_gameover() -> void:
+	var cx: float = Tuning.VIEW_W * 0.5
+	draw_rect(Rect2(0.0, 0.0, Tuning.VIEW_W, Tuning.VIEW_H),
+		Color(0.0, 0.0, 0.0, 0.55))
+	_text_center(Vector2(cx, 300.0), "ALL CANISTERS GONE", 52,
+		Tuning.COLOR_STEAL_FLASH)
+	_text_center(Vector2(cx, 366.0), "SCORE  %06d" % score, 30,
+		Tuning.COLOR_TEXT)
+	_text_center(Vector2(cx, 406.0), "WAVE REACHED  %d" % wave, 24,
+		Tuning.COLOR_TEXT)
+	_text_center(Vector2(cx, 446.0), "BEST  %06d" % best_score, 24,
+		Tuning.COLOR_SHARD)
+	_text_center(Vector2(cx, 516.0), "Fire to play again", 22,
+		Tuning.COLOR_TEXT_DIM)
+
+
+func _draw_center_lines(lines: Array[String], size: int, col: Color) -> void:
+	var y: float = Tuning.VIEW_H * 0.32
+	for line: String in lines:
+		_text_center(Vector2(Tuning.VIEW_W * 0.5, y), line, size, col)
+		y += float(size) + 10.0
+
+
+func _text(pos: Vector2, content: String, size: int, col: Color) -> void:
+	draw_string(_font, pos, content, HORIZONTAL_ALIGNMENT_LEFT, -1.0,
+		size, col)
+
+
+func _text_center(pos: Vector2, content: String, size: int, col: Color) -> void:
+	draw_string(_font, pos, content, HORIZONTAL_ALIGNMENT_CENTER,
+		Tuning.VIEW_W, size, col)

@@ -1,0 +1,530 @@
+class_name Main
+extends Node2D
+## Ripped-Off, milestone 1: a THIN orchestrator. It owns the run
+## state machine (TITLE / RUNNING / GAMEOVER), the score state (the
+## one place score and multiplier live), collision resolution and
+## the local high-score save. Everything with its own behaviour —
+## canisters, pirates, the director, the light — lives in its own
+## script and is only stepped and refereed from here.
+
+enum GameState { TITLE, RUNNING, GAMEOVER }
+
+const SAVE_PATH: String = "user://rippedoff_save.json"
+const SAVE_BEST_SCORE: String = "best_score"
+const SAVE_BEST_WAVE: String = "best_wave"
+
+var state: GameState = GameState.TITLE
+var paused: bool = false
+
+# Score state — exactly one home: here.
+var score: int = 0
+var multiplier: float = 1.0
+var mult_grace_t: float = 0.0
+var wave: int = 0
+var best_score: int = 0
+var best_wave: int = 0
+
+var player: Player = null
+var canisters: Array[Canister] = []
+var pirates: Array[Pirate] = []
+var bullets: Array[Bullet] = []
+var shards: Array[Shard] = []
+var director: SpawnDirector = null
+var fx: LightFx = null
+var hud: Hud = null
+
+var _debris: Array[Dictionary] = [] # shrapnel lines {pos, vel, t, dur, color}
+var _banner_t: float = 0.0
+var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
+
+
+# --- Setup ---------------------------------------------------------------
+
+func _ready() -> void:
+	_rng.randomize()
+	_load_best()
+	fx = LightFx.new()
+	add_child(fx)
+	director = SpawnDirector.new()
+	add_child(director)
+	director.spawn_requested.connect(_on_spawn_requested)
+	player = Player.new()
+	add_child(player)
+	player.fired.connect(_on_player_fired)
+	player.reset_for_run(_player_spawn_pos())
+	player.invincible_t = 0.0
+	_make_canisters()
+	hud = Hud.new()
+	add_child(hud)
+	_sync_hud()
+	queue_redraw()
+
+
+func _make_canisters() -> void:
+	for c: Canister in canisters:
+		c.queue_free()
+	canisters.clear()
+	for i: int in range(Tuning.SLOT_COUNT):
+		var c: Canister = Canister.new()
+		add_child(c)
+		move_child(c, 1) # canisters draw under ships, over the floor
+		c.setup(i, Tuning.slot_position(i))
+		canisters.append(c)
+
+
+func _player_spawn_pos() -> Vector2:
+	return Tuning.depot_center() + Vector2(0.0, 195.0)
+
+
+# --- Run flow --------------------------------------------------------------
+
+func start_run() -> void:
+	clear_field()
+	_make_canisters()
+	player.reset_for_run(_player_spawn_pos())
+	score = 0
+	multiplier = 1.0
+	mult_grace_t = 0.0
+	wave = 1
+	paused = false
+	state = GameState.RUNNING
+	fx.clear()
+	director.start_wave(wave)
+	_show_banner("WAVE 1")
+	_sync_hud()
+	queue_redraw()
+
+
+func _game_over() -> void:
+	state = GameState.GAMEOVER
+	director.stop()
+	fx.burst(Tuning.depot_center(), Tuning.COLOR_DEPOT, LightFx.Size.MEDIUM)
+	fx.edge_flash(Tuning.COLOR_STEAL_FLASH)
+	if score > best_score:
+		best_score = score
+		best_wave = wave
+		_save_best()
+	_sync_hud()
+
+
+func _start_next_wave() -> void:
+	wave += 1
+	director.start_wave(wave)
+	_show_banner("WAVE %d" % wave)
+
+
+func _show_banner(text: String) -> void:
+	_banner_t = Tuning.WAVE_BANNER_TIME
+	if hud != null:
+		hud.banner_text = text
+
+
+## Free every pirate, bullet and shard (used by start_run; also a
+## clean lever for the test harness).
+func clear_field() -> void:
+	for p: Pirate in pirates:
+		p.queue_free()
+	pirates.clear()
+	for b: Bullet in bullets:
+		b.queue_free()
+	bullets.clear()
+	for s: Shard in shards:
+		s.queue_free()
+	shards.clear()
+	_debris.clear()
+
+
+# --- Spawning (director / player signals) -----------------------------------
+
+func _on_spawn_requested(type_name: String, pos: Vector2) -> void:
+	spawn_pirate(type_name, pos)
+
+
+func spawn_pirate(type_name: String, pos: Vector2) -> Pirate:
+	var p: Pirate = Pirate.new()
+	add_child(p)
+	p.setup(type_name, pos)
+	pirates.append(p)
+	return p
+
+
+func _on_player_fired(from: Vector2, dir: Vector2) -> void:
+	spawn_bullet(from, dir)
+
+
+func spawn_bullet(from: Vector2, dir: Vector2) -> Bullet:
+	var b: Bullet = Bullet.new()
+	add_child(b)
+	b.setup(from, dir)
+	bullets.append(b)
+	return b
+
+
+func _spawn_shards(at: Vector2, count: int) -> void:
+	for i: int in range(count):
+		var s: Shard = Shard.new()
+		add_child(s)
+		var dir: Vector2 = Vector2.from_angle(_rng.randf() * TAU)
+		s.setup(at, dir, Tuning.SHARD_BURST_SPEED * _rng.randf_range(0.6, 1.25))
+		shards.append(s)
+
+
+func _spawn_debris(at: Vector2, color: Color, count: int) -> void:
+	for i: int in range(count):
+		var dir: Vector2 = Vector2.from_angle(_rng.randf() * TAU)
+		_debris.append({
+			"pos": at, "vel": dir * _rng.randf_range(90.0, 320.0),
+			"t": 0.0, "dur": _rng.randf_range(0.3, 0.6), "color": color})
+
+
+# --- Score state ---------------------------------------------------------------
+
+## The only door into the score. Returns what was actually paid.
+func add_score(base_points: int) -> int:
+	var gained: int = int(round(float(base_points) * multiplier))
+	score += gained
+	return gained
+
+
+func collect_shard() -> void:
+	add_score(Tuning.SHARD_BASE_POINTS)
+	multiplier = minf(multiplier + Tuning.MULT_PER_SHARD, Tuning.MULT_CAP)
+	mult_grace_t = Tuning.MULT_GRACE
+
+
+func recovery_base_points(tow_start: Vector2) -> int:
+	var dist: float = tow_start.distance_to(Tuning.depot_center())
+	var frac: float = clampf(
+		(dist - Tuning.RECOVERY_DIST_NEAR)
+			/ (Tuning.RECOVERY_DIST_FAR - Tuning.RECOVERY_DIST_NEAR),
+		0.0, 1.0)
+	return int(round(lerpf(
+		float(Tuning.RECOVERY_MIN), float(Tuning.RECOVERY_MAX), frac)))
+
+
+func _step_score(delta: float) -> void:
+	if mult_grace_t > 0.0:
+		mult_grace_t = maxf(mult_grace_t - delta, 0.0)
+	elif multiplier > 1.0:
+		multiplier = maxf(1.0, multiplier - Tuning.MULT_DECAY_RATE * delta)
+
+
+# --- Kills and death -------------------------------------------------------------
+
+func kill_pirate(p: Pirate, award: bool) -> void:
+	if not pirates.has(p):
+		return
+	pirates.erase(p)
+	if p.held != null and is_instance_valid(p.held):
+		p.held.release_from_drag(p.velocity)
+	_spawn_shards(p.global_position, p.shard_count())
+	_spawn_debris(p.global_position, p.draw_color, 7)
+	fx.burst(p.global_position, p.draw_color, LightFx.Size.SMALL)
+	if award:
+		add_score(p.score_value())
+	p.queue_free()
+
+
+func kill_player() -> void:
+	if not player.alive or player.is_invincible():
+		return
+	fx.burst(player.global_position, Tuning.COLOR_PLAYER,
+		LightFx.Size.PLAYER_DEATH)
+	fx.edge_flash(Tuning.COLOR_STEAL_FLASH)
+	_spawn_debris(player.global_position, Tuning.COLOR_PLAYER, 10)
+	player.die() # drops any tow; the canister goes LOOSE
+	multiplier = maxf(1.0, multiplier * Tuning.MULT_DEATH_FACTOR)
+	player.respawn_t = Tuning.PLAYER_RESPAWN_TIME
+
+
+# --- Queries ------------------------------------------------------------------------
+
+func canisters_remaining() -> int:
+	var n: int = 0
+	for c: Canister in canisters:
+		if c.state != Canister.State.GONE:
+			n += 1
+	return n
+
+
+func _any_dragging() -> bool:
+	for c: Canister in canisters:
+		if c.state == Canister.State.DRAGGING:
+			return true
+	return false
+
+
+# --- Main loops ------------------------------------------------------------------------
+
+func _input(event: InputEvent) -> void:
+	if event.is_action_pressed("pause") and state == GameState.RUNNING:
+		paused = not paused
+		_sync_hud()
+		return
+	if event.is_action_pressed("fire"):
+		if state == GameState.TITLE or state == GameState.GAMEOVER:
+			start_run()
+
+
+func _process(delta: float) -> void:
+	if not paused:
+		fx.advance(delta)
+		_step_debris(delta)
+		if state == GameState.RUNNING and _banner_t > 0.0:
+			_banner_t = maxf(_banner_t - delta, 0.0)
+	_sync_hud()
+	queue_redraw()
+
+
+func _physics_process(delta: float) -> void:
+	if state != GameState.RUNNING or paused:
+		return
+	_step_score(delta)
+
+	# Player, including the respawn beat.
+	player.step(delta, true)
+	if not player.alive and player.respawn_t <= 0.0:
+		player.respawn(_safe_respawn_pos())
+
+	# Spawning.
+	director.step(delta, pirates.size(), player.global_position)
+
+	# Pirates, then the canisters they drag or trail.
+	var pirates_now: Array[Pirate] = pirates.duplicate()
+	for p: Pirate in pirates_now:
+		p.step(delta, canisters)
+	_resolve_steals_and_leavers()
+
+	# Towed canister trails the ship before canister physics runs.
+	if player.towed != null and is_instance_valid(player.towed):
+		var c: Canister = player.towed
+		var trail: Vector2 = player.global_position \
+			- player.facing * Tuning.TOW_TRAIL_DIST
+		var blend: float = clampf(Tuning.TOW_FOLLOW_RATE * delta, 0.0, 1.0)
+		c.global_position = c.global_position.lerp(trail, blend)
+	for c: Canister in canisters:
+		c.step(delta)
+
+	# Bullets fly and hit.
+	var bullets_now: Array[Bullet] = bullets.duplicate()
+	for b: Bullet in bullets_now:
+		b.step(delta)
+		if b.expired():
+			bullets.erase(b)
+			b.queue_free()
+			continue
+		var hit: Pirate = _bullet_hit(b)
+		if hit != null:
+			bullets.erase(b)
+			b.queue_free()
+			kill_pirate(hit, true)
+
+	_resolve_player_contact()
+	_resolve_tow_and_deposit()
+
+	# Shards drift, magnet and get collected.
+	var shards_now: Array[Shard] = shards.duplicate()
+	for s: Shard in shards_now:
+		s.step(delta, player.global_position, player.alive)
+		if s.expired():
+			shards.erase(s)
+			s.queue_free()
+		elif player.alive and s.global_position.distance_to(
+				player.global_position) <= Tuning.SHARD_COLLECT_RADIUS:
+			shards.erase(s)
+			s.queue_free()
+			collect_shard()
+
+	# Wave and run endings.
+	if canisters_remaining() <= 0:
+		_game_over()
+	elif director.quota_exhausted() and pirates.is_empty() \
+			and not _any_dragging():
+		_start_next_wave()
+	queue_redraw()
+
+
+func _bullet_hit(b: Bullet) -> Pirate:
+	for p: Pirate in pirates:
+		if p.phase == Pirate.Phase.TELEGRAPH:
+			continue # not in the arena yet; cannot be shot mid-telegraph
+		if b.global_position.distance_to(p.global_position) \
+				<= p.radius + Tuning.BULLET_RADIUS:
+			return p
+	return null
+
+
+func _resolve_player_contact() -> void:
+	if not player.alive or player.is_invincible():
+		return
+	var contact: Array[Pirate] = pirates.duplicate()
+	for p: Pirate in contact:
+		if p.phase == Pirate.Phase.TELEGRAPH:
+			continue
+		if p.global_position.distance_to(player.global_position) \
+				<= p.radius + Tuning.PLAYER_RADIUS:
+			if player.speed_now() >= Tuning.RAM_SPEED_THRESHOLD:
+				kill_pirate(p, true) # ram: pirate dies, player flies on
+			else:
+				kill_player()
+				return
+
+
+func _resolve_tow_and_deposit() -> void:
+	if not player.alive:
+		return
+	if player.towed == null:
+		for c: Canister in canisters:
+			if c.state == Canister.State.LOOSE and not c.is_slotting() \
+					and c.global_position.distance_to(player.global_position) \
+						<= Tuning.TOW_LATCH_DIST:
+				if c.begin_tow(player):
+					player.towed = c
+				break
+	elif is_instance_valid(player.towed):
+		var c: Canister = player.towed
+		if c.state != Canister.State.TOWED:
+			player.towed = null
+		elif c.global_position.distance_to(Tuning.depot_center()) \
+				<= Tuning.DEPOT_RADIUS:
+			# Deposit: pay the distance-scaled bonus, glide it home.
+			add_score(recovery_base_points(c.tow_start_pos))
+			fx.burst(c.global_position, Tuning.COLOR_CANISTER,
+				LightFx.Size.SPARK)
+			c.begin_slot_glide()
+			player.towed = null
+
+
+func _resolve_steals_and_leavers() -> void:
+	var grown: Rect2 = Tuning.arena_rect().grow(Tuning.EXIT_MARGIN)
+	var now: Array[Pirate] = pirates.duplicate()
+	for p: Pirate in now:
+		if p.held != null and is_instance_valid(p.held) \
+				and p.held.state == Canister.State.DRAGGING \
+				and not grown.has_point(p.held.global_position):
+			var stolen: Canister = p.held
+			p.held = null
+			p.phase = Pirate.Phase.LEAVE
+			p.exit_point = Tuning.nearest_exit_point(p.global_position)
+			var edge_pos: Vector2 = Tuning.clamp_inside(
+				stolen.global_position, 2.0)
+			stolen.mark_gone()
+			fx.edge_flash(Tuning.COLOR_STEAL_FLASH)
+			fx.burst(edge_pos, Tuning.COLOR_STEAL_FLASH, LightFx.Size.SPARK)
+		if p.phase == Pirate.Phase.LEAVE \
+				and not grown.grow(50.0).has_point(p.global_position):
+			pirates.erase(p)
+			p.queue_free()
+
+
+func _safe_respawn_pos() -> Vector2:
+	var candidates: Array[Vector2] = [
+		_player_spawn_pos(),
+		Tuning.depot_center() + Vector2(-260.0, 195.0),
+		Tuning.depot_center() + Vector2(260.0, 195.0),
+		Tuning.depot_center() + Vector2(0.0, -195.0)]
+	var best: Vector2 = candidates[0]
+	var best_d: float = -1.0
+	for cand: Vector2 in candidates:
+		var nearest: float = INF
+		for p: Pirate in pirates:
+			nearest = minf(nearest, cand.distance_to(p.global_position))
+		if nearest > best_d:
+			best_d = nearest
+			best = cand
+	return best
+
+
+# --- Debris (shrapnel lines) ----------------------------------------------------------
+
+func _step_debris(delta: float) -> void:
+	for i: int in range(_debris.size() - 1, -1, -1):
+		var d: Dictionary = _debris[i]
+		var t: float = float(d["t"]) + delta
+		if t >= float(d["dur"]):
+			_debris.remove_at(i)
+		else:
+			d["t"] = t
+			var pos: Vector2 = d["pos"] as Vector2
+			var vel: Vector2 = d["vel"] as Vector2
+			d["pos"] = pos + vel * delta
+			_debris[i] = d
+
+
+# --- Save / load ------------------------------------------------------------------------
+
+func _load_best() -> void:
+	if not FileAccess.file_exists(SAVE_PATH):
+		return
+	var f: FileAccess = FileAccess.open(SAVE_PATH, FileAccess.READ)
+	if f == null:
+		return
+	var parsed: Variant = JSON.parse_string(f.get_as_text())
+	if typeof(parsed) == TYPE_DICTIONARY:
+		var data: Dictionary = parsed as Dictionary
+		best_score = int(data.get(SAVE_BEST_SCORE, 0))
+		best_wave = int(data.get(SAVE_BEST_WAVE, 0))
+
+
+func _save_best() -> void:
+	var f: FileAccess = FileAccess.open(SAVE_PATH, FileAccess.WRITE)
+	if f == null:
+		return
+	f.store_string(JSON.stringify({
+		SAVE_BEST_SCORE: best_score, SAVE_BEST_WAVE: best_wave}))
+
+
+# --- HUD sync and arena drawing ------------------------------------------------------------
+
+func _sync_hud() -> void:
+	if hud == null:
+		return
+	hud.score = score
+	hud.multiplier = multiplier
+	hud.grace_frac = clampf(mult_grace_t / Tuning.MULT_GRACE, 0.0, 1.0)
+	hud.wave = wave
+	hud.canisters_left = canisters_remaining()
+	hud.best_score = best_score
+	hud.best_wave = best_wave
+	hud.mode = int(state)
+	hud.paused = paused
+	hud.banner_frac = clampf(_banner_t / Tuning.WAVE_BANNER_TIME, 0.0, 1.0)
+	hud.queue_redraw()
+
+
+func _draw() -> void:
+	# Arena border.
+	var r: Rect2 = Tuning.arena_rect()
+	var border: PackedVector2Array = PackedVector2Array([
+		r.position, r.position + Vector2(r.size.x, 0.0),
+		r.position + r.size, r.position + Vector2(0.0, r.size.y),
+		r.position])
+	draw_polyline(border, Tuning.COLOR_ARENA, 2.0, true)
+	# Depot ring and slot cradles.
+	var center: Vector2 = Tuning.depot_center()
+	draw_arc(center, Tuning.DEPOT_RADIUS, 0.0, TAU, 72,
+		Color(Tuning.COLOR_DEPOT, 0.35), 1.5, true)
+	for i: int in range(Tuning.SLOT_COUNT):
+		var slot_pos: Vector2 = Tuning.slot_position(i)
+		var filled: bool = false
+		for c: Canister in canisters:
+			if c.slot_index == i and c.state == Canister.State.IN_SLOT:
+				filled = true
+				break
+		var col: Color = Tuning.COLOR_CRADLE_LIT if filled \
+			else Tuning.COLOR_CRADLE_DIM
+		draw_arc(slot_pos, 16.0, 0.0, TAU, 24, col, 2.0, true)
+	# Tethers for held canisters.
+	for c: Canister in canisters:
+		if (c.state == Canister.State.DRAGGING
+				or c.state == Canister.State.TOWED) \
+				and c.holder != null and is_instance_valid(c.holder):
+			draw_line(c.holder.global_position, c.global_position,
+				Color(Tuning.COLOR_CANISTER, 0.55), 1.5, true)
+	# Shrapnel.
+	for d: Dictionary in _debris:
+		var frac: float = float(d["t"]) / float(d["dur"])
+		var col: Color = Color(d["color"] as Color, 1.0 - frac)
+		var pos: Vector2 = d["pos"] as Vector2
+		var vel: Vector2 = d["vel"] as Vector2
+		draw_line(pos, pos + vel.normalized() * 9.0, col, 2.0, true)
