@@ -16,10 +16,13 @@ const SAVE_BEST_WAVE: String = "best_wave"
 var state: GameState = GameState.TITLE
 var paused: bool = false
 
-# Score state — exactly one home: here.
+# Score state — exactly one home: here. Rank lives here too, with
+# the score it feeds on: gains for kills, shards, buzz and
+# recoveries; bleeds on death and on canisters lost; floored by wave.
 var score: int = 0
 var multiplier: float = 1.0
 var mult_grace_t: float = 0.0
+var rank: float = Tuning.RANK_START
 var wave: int = 0
 var best_score: int = 0
 var best_wave: int = 0
@@ -28,13 +31,16 @@ var player: Player = null
 var canisters: Array[Canister] = []
 var pirates: Array[Pirate] = []
 var bullets: Array[Bullet] = []
+var enemy_bullets: Array[EnemyBullet] = []
 var shards: Array[Shard] = []
 var director: SpawnDirector = null
 var fx: LightFx = null
 var hud: Hud = null
 
 var _debris: Array[Dictionary] = [] # shrapnel lines {pos, vel, t, dur, color}
+var _popups: Array[Dictionary] = [] # floating text {pos, t, dur, text, color}
 var _banner_t: float = 0.0
+var _font: Font = null
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
 
@@ -42,6 +48,7 @@ var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
 func _ready() -> void:
 	_rng.randomize()
+	_font = ThemeDB.fallback_font
 	_load_best()
 	fx = LightFx.new()
 	add_child(fx)
@@ -85,6 +92,7 @@ func start_run() -> void:
 	score = 0
 	multiplier = 1.0
 	mult_grace_t = 0.0
+	rank = Tuning.RANK_START
 	wave = 1
 	paused = false
 	state = GameState.RUNNING
@@ -128,10 +136,14 @@ func clear_field() -> void:
 	for b: Bullet in bullets:
 		b.queue_free()
 	bullets.clear()
+	for eb: EnemyBullet in enemy_bullets:
+		eb.queue_free()
+	enemy_bullets.clear()
 	for s: Shard in shards:
 		s.queue_free()
 	shards.clear()
 	_debris.clear()
+	_popups.clear()
 
 
 # --- Spawning (director / player signals) -----------------------------------
@@ -144,8 +156,21 @@ func spawn_pirate(type_name: String, pos: Vector2) -> Pirate:
 	var p: Pirate = Pirate.new()
 	add_child(p)
 	p.setup(type_name, pos)
+	p.fired.connect(_on_pirate_fired)
 	pirates.append(p)
 	return p
+
+
+func _on_pirate_fired(from: Vector2, dir: Vector2) -> void:
+	spawn_enemy_bullet(from, dir)
+
+
+func spawn_enemy_bullet(from: Vector2, dir: Vector2) -> EnemyBullet:
+	var eb: EnemyBullet = EnemyBullet.new()
+	add_child(eb)
+	eb.setup(from, dir)
+	enemy_bullets.append(eb)
+	return eb
 
 
 func _on_player_fired(from: Vector2, dir: Vector2) -> void:
@@ -190,6 +215,43 @@ func collect_shard() -> void:
 	add_score(Tuning.SHARD_BASE_POINTS)
 	multiplier = minf(multiplier + Tuning.MULT_PER_SHARD, Tuning.MULT_CAP)
 	mult_grace_t = Tuning.MULT_GRACE
+	_add_rank(Tuning.RANK_GAIN_SHARD)
+
+
+## Rank moves only through here: clamped to 0..1, and the per-wave
+## floor is re-applied every frame in _step_score.
+func _add_rank(amount: float) -> void:
+	rank = clampf(rank + amount, 0.0, 1.0)
+
+
+## A buzz payout (bullet graze or close drag pass): small points
+## through the multiplier, a multiplier nudge, a little rank, a
+## light tick on the ship and a floating "BUZZ" marker.
+func _award_buzz(at_pos: Vector2) -> void:
+	var gained: int = add_score(Tuning.BUZZ_POINTS)
+	multiplier = minf(multiplier + Tuning.BUZZ_MULT_NUDGE, Tuning.MULT_CAP)
+	_add_rank(Tuning.RANK_GAIN_BUZZ)
+	fx.burst(player.global_position, Tuning.COLOR_SHARD, LightFx.Size.SPARK)
+	spawn_popup(at_pos, "BUZZ +%d" % gained, Tuning.COLOR_SHARD)
+
+
+## Floating world-space score text (buzz, recovery bonuses).
+func spawn_popup(pos: Vector2, text: String, color: Color) -> void:
+	_popups.append({"pos": pos, "t": 0.0, "dur": Tuning.POPUP_TIME,
+		"text": text, "color": color})
+
+
+func _step_popups(delta: float) -> void:
+	for i: int in range(_popups.size() - 1, -1, -1):
+		var pop: Dictionary = _popups[i]
+		var t: float = float(pop["t"]) + delta
+		if t >= float(pop["dur"]):
+			_popups.remove_at(i)
+		else:
+			pop["t"] = t
+			var pos: Vector2 = pop["pos"] as Vector2
+			pop["pos"] = pos + Vector2(0.0, -Tuning.POPUP_RISE_SPEED * delta)
+			_popups[i] = pop
 
 
 func recovery_base_points(tow_start: Vector2) -> int:
@@ -207,6 +269,8 @@ func _step_score(delta: float) -> void:
 		mult_grace_t = maxf(mult_grace_t - delta, 0.0)
 	elif multiplier > 1.0:
 		multiplier = maxf(1.0, multiplier - Tuning.MULT_DECAY_RATE * delta)
+	# The rank floor: bleeding stops at the wave's menace level.
+	rank = maxf(rank, Tuning.rank_floor_for_wave(wave))
 
 
 # --- Kills and death -------------------------------------------------------------
@@ -222,6 +286,7 @@ func kill_pirate(p: Pirate, award: bool) -> void:
 	fx.burst(p.global_position, p.draw_color, LightFx.Size.SMALL)
 	if award:
 		add_score(p.score_value())
+		_add_rank(Tuning.RANK_GAIN_KILL)
 	p.queue_free()
 
 
@@ -232,9 +297,21 @@ func kill_player() -> void:
 		LightFx.Size.PLAYER_DEATH)
 	fx.edge_flash(Tuning.COLOR_STEAL_FLASH)
 	_spawn_debris(player.global_position, Tuning.COLOR_PLAYER, 10)
+	_cancel_enemy_bullets() # death protocol: hostile fire becomes salvage
 	player.die() # drops any tow; the canister goes LOOSE
 	multiplier = maxf(1.0, multiplier * Tuning.MULT_DEATH_FACTOR)
+	_add_rank(-Tuning.RANK_BLEED_DEATH)
 	player.respawn_t = Tuning.PLAYER_RESPAWN_TIME
+
+
+## Every live enemy bullet converts into a salvage shard where it
+## flies. Death costs the multiplier, never the whole field state.
+func _cancel_enemy_bullets() -> void:
+	var now: Array[EnemyBullet] = enemy_bullets.duplicate()
+	enemy_bullets.clear()
+	for eb: EnemyBullet in now:
+		_spawn_shards(eb.global_position, 1)
+		eb.queue_free()
 
 
 # --- Queries ------------------------------------------------------------------------
@@ -270,6 +347,7 @@ func _process(delta: float) -> void:
 	if not paused:
 		fx.advance(delta)
 		_step_debris(delta)
+		_step_popups(delta)
 		if state == GameState.RUNNING and _banner_t > 0.0:
 			_banner_t = maxf(_banner_t - delta, 0.0)
 	_sync_hud()
@@ -287,11 +365,17 @@ func _physics_process(delta: float) -> void:
 		player.respawn(_safe_respawn_pos())
 
 	# Spawning.
-	director.step(delta, pirates.size(), player.global_position)
+	director.step(delta, pirates.size(), player.global_position, rank)
 
-	# Pirates, then the canisters they drag or trail.
+	# Pirates, then the canisters they drag or trail. Each pirate
+	# gets its per-frame context first: where the player is, whether
+	# it is up, and the rank scaling for its speed and fire rate.
 	var pirates_now: Array[Pirate] = pirates.duplicate()
 	for p: Pirate in pirates_now:
+		p.player_pos = player.global_position
+		p.player_alive = player.alive
+		p.speed_scale = Tuning.rank_speed_mult(rank)
+		p.fire_interval_scale = Tuning.rank_fire_mult(rank)
 		p.step(delta, canisters)
 	_resolve_steals_and_leavers()
 
@@ -319,7 +403,10 @@ func _physics_process(delta: float) -> void:
 			b.queue_free()
 			kill_pirate(hit, true)
 
+	_step_enemy_bullets(delta)
+
 	_resolve_player_contact()
+	_resolve_buzz_passes()
 	_resolve_tow_and_deposit()
 
 	# Shards drift, magnet and get collected.
@@ -342,6 +429,49 @@ func _physics_process(delta: float) -> void:
 			and not _any_dragging():
 		_start_next_wave()
 	queue_redraw()
+
+
+## Enemy bullets fly, hit (a hit is a death, via the M1 flow) and
+## graze. A graze inside BUZZ_RADIUS that does not hit pays buzz —
+## once per bullet, however long it stays in the ring.
+func _step_enemy_bullets(delta: float) -> void:
+	var now: Array[EnemyBullet] = enemy_bullets.duplicate()
+	for eb: EnemyBullet in now:
+		if not is_instance_valid(eb):
+			continue # a death this frame may have cancelled the rest
+		eb.step(delta)
+		if eb.expired():
+			enemy_bullets.erase(eb)
+			eb.queue_free()
+			continue
+		if not player.alive:
+			continue
+		var d: float = eb.global_position.distance_to(player.global_position)
+		if not player.is_invincible() \
+				and d <= Tuning.ENEMY_BULLET_RADIUS + Tuning.PLAYER_RADIUS:
+			enemy_bullets.erase(eb)
+			eb.queue_free()
+			kill_player() # converts every other live bullet to shards
+		elif not eb.buzzed and d <= Tuning.BUZZ_RADIUS:
+			eb.buzzed = true
+			_award_buzz(eb.global_position)
+
+
+## The other buzz: a close pass on a pirate mid-drag, without
+## contact. Once per pirate per drag — the flag resets on latch.
+func _resolve_buzz_passes() -> void:
+	if not player.alive:
+		return
+	var contact_range: float = Tuning.PLAYER_RADIUS # plus each pirate's radius
+	var now: Array[Pirate] = pirates.duplicate()
+	for p: Pirate in now:
+		if p.phase != Pirate.Phase.DRAG or p.held == null \
+				or p.buzzed_this_drag:
+			continue
+		var d: float = p.global_position.distance_to(player.global_position)
+		if d <= Tuning.BUZZ_RADIUS and d > contact_range + p.radius:
+			p.buzzed_this_drag = true
+			_award_buzz(p.global_position)
 
 
 func _bullet_hit(b: Bullet) -> Pirate:
@@ -388,7 +518,10 @@ func _resolve_tow_and_deposit() -> void:
 		elif c.global_position.distance_to(Tuning.depot_center()) \
 				<= Tuning.DEPOT_RADIUS:
 			# Deposit: pay the distance-scaled bonus, glide it home.
-			add_score(recovery_base_points(c.tow_start_pos))
+			var paid: int = add_score(recovery_base_points(c.tow_start_pos))
+			_add_rank(Tuning.RANK_GAIN_RECOVERY)
+			spawn_popup(c.global_position, "+%d" % paid,
+				Tuning.COLOR_CANISTER)
 			fx.burst(c.global_position, Tuning.COLOR_CANISTER,
 				LightFx.Size.SPARK)
 			c.begin_slot_glide()
@@ -409,6 +542,7 @@ func _resolve_steals_and_leavers() -> void:
 			var edge_pos: Vector2 = Tuning.clamp_inside(
 				stolen.global_position, 2.0)
 			stolen.mark_gone()
+			_add_rank(-Tuning.RANK_BLEED_STEAL) # a loss lets the game ease off
 			fx.edge_flash(Tuning.COLOR_STEAL_FLASH)
 			fx.burst(edge_pos, Tuning.COLOR_STEAL_FLASH, LightFx.Size.SPARK)
 		if p.phase == Pirate.Phase.LEAVE \
@@ -482,6 +616,8 @@ func _sync_hud() -> void:
 	hud.score = score
 	hud.multiplier = multiplier
 	hud.grace_frac = clampf(mult_grace_t / Tuning.MULT_GRACE, 0.0, 1.0)
+	hud.rank = rank
+	hud.rank_floor = Tuning.rank_floor_for_wave(wave)
 	hud.wave = wave
 	hud.canisters_left = canisters_remaining()
 	hud.best_score = best_score
@@ -528,3 +664,13 @@ func _draw() -> void:
 		var pos: Vector2 = d["pos"] as Vector2
 		var vel: Vector2 = d["vel"] as Vector2
 		draw_line(pos, pos + vel.normalized() * 9.0, col, 2.0, true)
+	# Floating score popups (buzz, recovery bonuses).
+	if _font != null:
+		for pop: Dictionary in _popups:
+			var frac: float = float(pop["t"]) / float(pop["dur"])
+			var base_col: Color = pop["color"] as Color
+			var col: Color = Color(base_col, 1.0 - frac)
+			var pos: Vector2 = pop["pos"] as Vector2
+			draw_string(_font, pos - Vector2(60.0, 0.0),
+				String(pop["text"]), HORIZONTAL_ALIGNMENT_CENTER,
+				120.0, 15, col)

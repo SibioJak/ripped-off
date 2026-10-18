@@ -9,6 +9,8 @@ extends Node2D
 var score: int = 0
 var multiplier: float = 1.0
 var grace_frac: float = 0.0 # 1 = decay grace full, 0 = decaying
+var rank: float = 0.0 # 0..1, the intensity engine, shown and named
+var rank_floor: float = 0.0 # the wave's menace floor, ticked on the bar
 var wave: int = 0
 var canisters_left: int = 8
 var best_score: int = 0
@@ -61,6 +63,17 @@ func _draw_run_hud() -> void:
 	draw_rect(Rect2(mx, 40.0, fill, 4.0), Tuning.COLOR_SHARD)
 	draw_rect(Rect2(mx, 47.0, bar_w * grace_frac, 3.0),
 		Color(Tuning.COLOR_DEPOT, 0.8))
+	# RANK: labelled, visible, with the wave floor ticked so the
+	# player can watch pressure build and see where it cannot fall.
+	var rx: float = 560.0
+	_text(Vector2(rx, 32.0), "RANK", 22, Tuning.COLOR_TEXT)
+	var rank_w: float = 150.0
+	draw_rect(Rect2(rx + 62.0, 20.0, rank_w, 8.0),
+		Color(Tuning.COLOR_TEXT_DIM, 0.35))
+	draw_rect(Rect2(rx + 62.0, 20.0, rank_w * clampf(rank, 0.0, 1.0), 8.0),
+		Tuning.COLOR_STEAL_FLASH.lerp(Tuning.COLOR_SHARD, 1.0 - rank))
+	var floor_x: float = rx + 62.0 + rank_w * clampf(rank_floor, 0.0, 1.0)
+	draw_rect(Rect2(floor_x - 1.0, 17.0, 2.0, 14.0), Tuning.COLOR_TEXT)
 	_text(Vector2(1030.0, 32.0), "WAVE %d" % wave, 22, Tuning.COLOR_TEXT)
 	# Canister pips.
 	for i: int in range(Tuning.SLOT_COUNT):

@@ -4,7 +4,9 @@ extends Node
 ## the arena except through here, and every entry is announced by
 ## the pirate's own telegraph at its spawn point. Spawn points sit
 ## on the arena walls, never within the fairness exclusion radius
-## of the player.
+## of the player. Rank (pushed in by Main each step) tightens the
+## pacing and lifts the alive cap; from wave 2 the quota mixes
+## gunners in alongside grabbers, the share growing with the wave.
 
 signal spawn_requested(type_name: String, pos: Vector2)
 
@@ -31,18 +33,39 @@ func quota_exhausted() -> bool:
 	return quota_left <= 0
 
 
-func step(delta: float, alive_count: int, player_pos: Vector2) -> void:
+func step(delta: float, alive_count: int, player_pos: Vector2,
+		rank: float = 0.0) -> void:
 	if not active or quota_left <= 0:
 		return
+	var bonus: int = Tuning.rank_alive_bonus(rank)
 	var max_alive: int = mini(
-		Tuning.WAVE_MAX_ALIVE_BASE + wave - 1, Tuning.WAVE_MAX_ALIVE_CAP)
+		Tuning.WAVE_MAX_ALIVE_BASE + wave - 1 + bonus,
+		Tuning.WAVE_MAX_ALIVE_CAP + bonus)
 	if alive_count >= max_alive:
 		return
 	_spawn_t -= delta
 	if _spawn_t <= 0.0:
-		_spawn_t = Tuning.SPAWN_INTERVAL * randf_range(0.8, 1.25)
+		_spawn_t = Tuning.rank_spawn_interval(Tuning.SPAWN_INTERVAL, rank) \
+			* randf_range(0.8, 1.25)
 		quota_left -= 1
-		spawn_requested.emit("grabber", pick_spawn_point(player_pos))
+		spawn_requested.emit(pick_type(), pick_spawn_point(player_pos))
+
+
+## The gunner share of a wave's quota: none on wave 1, then the
+## Tuning base share growing per wave up to its cap.
+func gunner_share() -> float:
+	if wave < 2:
+		return 0.0
+	return clampf(
+		Tuning.GUNNER_SHARE_MIN
+			+ Tuning.GUNNER_SHARE_PER_WAVE * float(wave - 2),
+		0.0, Tuning.GUNNER_SHARE_CAP)
+
+
+func pick_type() -> String:
+	if randf() < gunner_share():
+		return "gunner"
+	return "grabber"
 
 
 ## A point just inside a random arena wall, kept out of the
