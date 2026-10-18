@@ -1,5 +1,5 @@
 extends Node
-## Headless verification harness for Ripped-Off M1.
+## Headless verification harness for Ripped-Off (M1 + M2).
 ## Run:  Godot --headless --path . res://tests/harness.tscn
 ## Drives the REAL game scene through its real code paths
 ## (director disabled so spawns are deterministic; kills go
@@ -149,6 +149,164 @@ func _ready() -> void:
 	await _frames(110)
 	_check("respawn returns the ship with invincibility active",
 		game.player.alive and game.player.is_invincible())
+
+	# --- M2: rank, gunners, buzz, death bullet-cancel ----------------
+
+	# (15) From wave 2 the director mixes gunners into the quota.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	seed(20261018)
+	var saw_gunner: bool = false
+	var round_i: int = 0
+	while not saw_gunner and round_i < 3:
+		round_i += 1
+		game.director.start_wave(2) # quota 8, gunners enter the mix
+		game.player.global_position = Tuning.depot_center() \
+			+ Vector2(0.0, 195.0)
+		var seen: int = 0
+		while game.director.quota_left > 0 and seen < 40:
+			var snapshot: Array[Pirate] = game.pirates.duplicate()
+			for p: Pirate in snapshot:
+				seen += 1
+				if p.type_name == "gunner":
+					saw_gunner = true
+				game.pirates.erase(p)
+				p.queue_free()
+			await _frames(1)
+	game.director.active = false
+	_check("wave-2 quota includes at least one gunner", saw_gunner)
+
+	# (16) The gunner's shot follows its charge telegraph; nothing
+	# fires during the entry telegraph or mid-charge.
+	game.clear_field()
+	var g: Pirate = game.spawn_pirate("gunner",
+		Tuning.depot_center() + Vector2(300.0, 0.0))
+	game.player.global_position = Tuning.depot_center() \
+		+ Vector2(0.0, 195.0)
+	game.player.invincible_t = 0.0
+	var fired_in_entry: bool = false
+	var fired_mid_charge: bool = false
+	var saw_charge: bool = false
+	var bullets_seen: int = 0
+	for i: int in range(300):
+		await _frames(1)
+		if not is_instance_valid(g):
+			break
+		bullets_seen = maxi(bullets_seen, game.enemy_bullets.size())
+		if g.phase == Pirate.Phase.TELEGRAPH \
+				and game.enemy_bullets.size() > 0:
+			fired_in_entry = true
+		if g.charge_frac() >= 0.0:
+			saw_charge = true
+			if game.enemy_bullets.size() > 0:
+				fired_mid_charge = true
+	_check("gunner shows a muzzle charge before firing", saw_charge)
+	_check("gunner fires nothing during its entry telegraph",
+		not fired_in_entry)
+	_check("no enemy bullet exists while the charge winds up",
+		not fired_mid_charge)
+	_check("gunner fires an aimed enemy bullet", bullets_seen >= 1)
+
+	# (17) A bullet grazing the ship pays buzz exactly once.
+	game.clear_field()
+	game.player.global_position = Vector2(640.0, 400.0)
+	game.player.alive = true
+	game.player.visible = true
+	game.player.invincible_t = 99.0 # the pass can only be a pass
+	var gz_mult_before: float = game.multiplier
+	var gz_score_before: int = game.score
+	# Path passes ~18px from the ship: inside BUZZ_RADIUS, no hit.
+	game.spawn_enemy_bullet(Vector2(640.0, 220.0), Vector2(0.1, 1.0))
+	var buzzed: bool = false
+	var buzz_gain: int = 0
+	for i: int in range(200):
+		await _frames(1)
+		if not buzzed and game.multiplier > gz_mult_before:
+			buzzed = true
+			buzz_gain = game.score - gz_score_before
+	_check("grazing bullet pays buzz (score and multiplier up)",
+		buzzed and buzz_gain > 0)
+	_check("buzz pays exactly once while the bullet lingers",
+		game.score == gz_score_before + buzz_gain
+			and game.multiplier
+				<= gz_mult_before + Tuning.BUZZ_MULT_NUDGE + 0.001)
+
+	# (18) Death converts every live enemy bullet into shards.
+	game.clear_field()
+	game.player.global_position = Vector2(640.0, 400.0)
+	game.player.alive = true
+	game.player.invincible_t = 0.0
+	game.spawn_enemy_bullet(Vector2(640.0, 100.0), Vector2.DOWN)
+	game.spawn_enemy_bullet(Vector2(200.0, 100.0), Vector2.DOWN)
+	game.spawn_enemy_bullet(Vector2(1100.0, 100.0), Vector2.DOWN)
+	var bullets_live: int = game.enemy_bullets.size()
+	var shards_pre: int = game.shards.size()
+	game.kill_player()
+	_check("death leaves zero live enemy bullets",
+		bullets_live >= 2 and game.enemy_bullets.is_empty())
+	_check("cancelled bullets become salvage shards",
+		game.shards.size() >= shards_pre + bullets_live)
+
+	# (19) Rank rises on kills and salvage, falls on death.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.rank = Tuning.RANK_START
+	game.mult_grace_t = 0.0
+	var rank_base: float = game.rank
+	var slot3: Vector2 = Tuning.slot_position(3)
+	var thief: Pirate = game.spawn_pirate("grabber",
+		slot3 + Vector2(120.0, 0.0))
+	for i: int in range(300):
+		await _frames(1)
+		if thief.held != null:
+			break
+	game.spawn_bullet(thief.global_position + Vector2(-30.0, 0.0),
+		Vector2.RIGHT)
+	for i: int in range(30):
+		await _frames(1)
+		if not is_instance_valid(thief):
+			break
+	if game.shards.size() > 0:
+		game.player.global_position = game.shards[0].global_position
+	for i: int in range(90):
+		await _frames(1)
+		if game.rank > rank_base + 0.02:
+			break
+	var rank_fed: float = game.rank
+	_check("rank rises on a kill and shard collection",
+		rank_fed > rank_base)
+	game.player.invincible_t = 0.0
+	game.kill_player()
+	await _frames(5)
+	_check("rank falls on player death", game.rank < rank_fed)
+
+	# (20) Rank makes the director hungrier: the same quota drains
+	# faster, and the concurrent-alive cap is higher.
+	var d_low: SpawnDirector = SpawnDirector.new()
+	var d_high: SpawnDirector = SpawnDirector.new()
+	d_low.start_wave(10)
+	d_high.start_wave(10)
+	var t_low: float = 0.0
+	while d_low.quota_left > 0 and t_low < 120.0:
+		d_low.step(1.0 / 60.0, 0, Vector2.ZERO, 0.0)
+		t_low += 1.0 / 60.0
+	var t_high: float = 0.0
+	while d_high.quota_left > 0 and t_high < 120.0:
+		d_high.step(1.0 / 60.0, 0, Vector2.ZERO, 1.0)
+		t_high += 1.0 / 60.0
+	d_low.queue_free()
+	d_high.queue_free()
+	_check("high rank drains a spawn quota measurably faster",
+		t_high + 1.0 < t_low)
+	var cap_low: int = mini(
+		Tuning.WAVE_MAX_ALIVE_BASE + 10 - 1 + Tuning.rank_alive_bonus(0.0),
+		Tuning.WAVE_MAX_ALIVE_CAP + Tuning.rank_alive_bonus(0.0))
+	var cap_high: int = mini(
+		Tuning.WAVE_MAX_ALIVE_BASE + 10 - 1 + Tuning.rank_alive_bonus(1.0),
+		Tuning.WAVE_MAX_ALIVE_CAP + Tuning.rank_alive_bonus(1.0))
+	_check("high rank lifts the concurrent-alive cap", cap_high > cap_low)
 
 	print("HARNESS: %d/%d checks passed" % [_passed, _passed + _failed])
 	get_tree().quit(0 if _failed == 0 else 1)

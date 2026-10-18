@@ -7,9 +7,10 @@ the salvage multiplier — the run ends when all 8 canisters are gone,
 and the high score is the goal.
 
 Design document: `~/workspace/ripped-off/design.md` (kept outside the
-repo). This build is **Milestone 1 — the playable core**. Later design
-systems (bosses, dynamic rank, bombs, gravity wells, powerups, co-op,
-your-music reactivity, global leaderboard) are deliberately not in yet.
+repo). This build is **Milestone 2 — pressure & variety**, on top of
+the M1 playable core. Later design systems (bosses, bombs, gravity
+wells, powerups, co-op, your-music reactivity, global leaderboard)
+are deliberately not in yet.
 
 ## What's in M1
 
@@ -30,6 +31,29 @@ your-music reactivity, global leaderboard) are deliberately not in yet.
   screen shake
 - Local best score + wave saved to `user://rippedoff_save.json`
 - All gameplay constants in `scripts/tuning.gd`
+
+## What's new in M2
+
+- **Rank, the intensity engine**: a visible RANK bar on the HUD
+  (with the wave's menace floor ticked). Kills, shard collection,
+  buzz and recoveries raise rank; player death and stolen canisters
+  bleed it — never below a floor that rises with the wave. Rank
+  tightens spawn pacing, lifts the concurrent-alive cap, speeds
+  enemies up, and shortens gunner fire intervals
+- **The gunner**, a second pirate class added as data: flies to a
+  standoff band around the depot, strafes, and fires aimed shots —
+  every shot announced by a growing muzzle charge-up. Enemy bullets
+  (`scripts/enemy_bullet.gd`) draw bright-core/dark-rim above
+  everything else. From wave 2 the director mixes gunners into the
+  quota, the share growing with the wave
+- **Buzz (grazing)**: an enemy bullet passing within 46px without
+  hitting, or a close pass on a pirate mid-drag, pays 25 points
+  through the multiplier, a +0.1 multiplier nudge and a little rank
+  — once per bullet, once per drag. Floating popups show buzz and
+  recovery payouts in the world
+- **Death protocol**: dying converts every live enemy bullet into
+  a salvage shard where it flies, on top of the M1 costs
+  (multiplier halved, rank bled)
 
 ## Controls
 
@@ -58,4 +82,8 @@ boot/title, 8 slotted canisters, pirate latch + drag, bullet kill
 frees the canister LOOSE, tow + deposit pays the recovery bonus,
 shard collection raises the multiplier, multiplier decay, game over
 at 0 canisters, and death halving the multiplier with an invincible
-respawn. It prints PASS/FAIL per check and a total.
+respawn — plus M2: gunners in the wave-2 mix, charge-telegraphed
+fire, buzz paid exactly once, death converting bullets to shards,
+rank rising on play and falling on death, and the director getting
+measurably hungrier at high rank. It prints PASS/FAIL per check
+and a total.
