@@ -1,0 +1,13 @@
+# Godot generated
+.godot/
+*.uid
+*.import
+*.tmp
+
+# Export artifacts
+export/
+*.exe
+*.pck
+
+# OS noise
+.DS_Store
