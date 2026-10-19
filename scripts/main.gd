@@ -36,6 +36,10 @@ var shards: Array[Shard] = []
 var director: SpawnDirector = null
 var fx: LightFx = null
 var hud: Hud = null
+var music: MusicDirector = null
+var sfx: SfxDirector = null
+
+var _run_count: int = 0 # seeds the music variant rotation per run
 
 var _debris: Array[Dictionary] = [] # shrapnel lines {pos, vel, t, dur, color}
 var _popups: Array[Dictionary] = [] # floating text {pos, t, dur, text, color}
@@ -49,6 +53,7 @@ var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 func _ready() -> void:
 	_rng.randomize()
 	_font = ThemeDB.fallback_font
+	AudioBuses.ensure()
 	_load_best()
 	fx = LightFx.new()
 	add_child(fx)
@@ -63,6 +68,10 @@ func _ready() -> void:
 	_make_canisters()
 	hud = Hud.new()
 	add_child(hud)
+	music = MusicDirector.new()
+	add_child(music) # boots in TITLE mode: the title loop is live
+	sfx = SfxDirector.new()
+	add_child(sfx)
 	_sync_hud()
 	queue_redraw()
 
@@ -97,6 +106,9 @@ func start_run() -> void:
 	paused = false
 	state = GameState.RUNNING
 	fx.clear()
+	_run_count += 1
+	music.begin_run(20261018 + _run_count * 7919)
+	sfx.play("ui_start", player.global_position)
 	director.start_wave(wave)
 	_show_banner("WAVE 1")
 	_sync_hud()
@@ -106,6 +118,8 @@ func start_run() -> void:
 func _game_over() -> void:
 	state = GameState.GAMEOVER
 	director.stop()
+	music.set_mode_title() # run layers fade out; title loop returns
+	sfx.play("game_over", Tuning.depot_center())
 	fx.burst(Tuning.depot_center(), Tuning.COLOR_DEPOT, LightFx.Size.MEDIUM)
 	fx.edge_flash(Tuning.COLOR_STEAL_FLASH)
 	if score > best_score:
@@ -118,6 +132,7 @@ func _game_over() -> void:
 func _start_next_wave() -> void:
 	wave += 1
 	director.start_wave(wave)
+	sfx.play("wave_start", Tuning.depot_center())
 	_show_banner("WAVE %d" % wave)
 
 
@@ -175,6 +190,7 @@ func spawn_enemy_bullet(from: Vector2, dir: Vector2) -> EnemyBullet:
 
 func _on_player_fired(from: Vector2, dir: Vector2) -> void:
 	spawn_bullet(from, dir)
+	sfx.play("shot", from) # throttled inside the sfx director
 
 
 func spawn_bullet(from: Vector2, dir: Vector2) -> Bullet:
@@ -216,6 +232,7 @@ func collect_shard() -> void:
 	multiplier = minf(multiplier + Tuning.MULT_PER_SHARD, Tuning.MULT_CAP)
 	mult_grace_t = Tuning.MULT_GRACE
 	_add_rank(Tuning.RANK_GAIN_SHARD)
+	sfx.play_collect(player.global_position)
 
 
 ## Rank moves only through here: clamped to 0..1, and the per-wave
@@ -231,6 +248,7 @@ func _award_buzz(at_pos: Vector2) -> void:
 	var gained: int = add_score(Tuning.BUZZ_POINTS)
 	multiplier = minf(multiplier + Tuning.BUZZ_MULT_NUDGE, Tuning.MULT_CAP)
 	_add_rank(Tuning.RANK_GAIN_BUZZ)
+	sfx.play("buzz", at_pos)
 	fx.burst(player.global_position, Tuning.COLOR_SHARD, LightFx.Size.SPARK)
 	spawn_popup(at_pos, "BUZZ +%d" % gained, Tuning.COLOR_SHARD)
 
@@ -284,6 +302,7 @@ func kill_pirate(p: Pirate, award: bool) -> void:
 	_spawn_shards(p.global_position, p.shard_count())
 	_spawn_debris(p.global_position, p.draw_color, 7)
 	fx.burst(p.global_position, p.draw_color, LightFx.Size.SMALL)
+	sfx.play("death_" + p.type_name, p.global_position) # per-class pop
 	if award:
 		add_score(p.score_value())
 		_add_rank(Tuning.RANK_GAIN_KILL)
@@ -295,6 +314,7 @@ func kill_player() -> void:
 		return
 	fx.burst(player.global_position, Tuning.COLOR_PLAYER,
 		LightFx.Size.PLAYER_DEATH)
+	sfx.play("player_death", player.global_position)
 	fx.edge_flash(Tuning.COLOR_STEAL_FLASH)
 	_spawn_debris(player.global_position, Tuning.COLOR_PLAYER, 10)
 	_cancel_enemy_bullets() # death protocol: hostile fire becomes salvage
@@ -350,6 +370,8 @@ func _process(delta: float) -> void:
 		_step_popups(delta)
 		if state == GameState.RUNNING and _banner_t > 0.0:
 			_banner_t = maxf(_banner_t - delta, 0.0)
+	if state == GameState.RUNNING and music != null:
+		music.set_rank(rank) # the soundtrack hears the pressure
 	_sync_hud()
 	queue_redraw()
 
@@ -510,6 +532,7 @@ func _resolve_tow_and_deposit() -> void:
 						<= Tuning.TOW_LATCH_DIST:
 				if c.begin_tow(player):
 					player.towed = c
+					sfx.play("tow_latch", c.global_position)
 				break
 	elif is_instance_valid(player.towed):
 		var c: Canister = player.towed
@@ -518,7 +541,9 @@ func _resolve_tow_and_deposit() -> void:
 		elif c.global_position.distance_to(Tuning.depot_center()) \
 				<= Tuning.DEPOT_RADIUS:
 			# Deposit: pay the distance-scaled bonus, glide it home.
-			var paid: int = add_score(recovery_base_points(c.tow_start_pos))
+			var base_pts: int = recovery_base_points(c.tow_start_pos)
+			var paid: int = add_score(base_pts)
+			sfx.play_recovery(c.global_position, base_pts)
 			_add_rank(Tuning.RANK_GAIN_RECOVERY)
 			spawn_popup(c.global_position, "+%d" % paid,
 				Tuning.COLOR_CANISTER)
@@ -542,6 +567,7 @@ func _resolve_steals_and_leavers() -> void:
 			var edge_pos: Vector2 = Tuning.clamp_inside(
 				stolen.global_position, 2.0)
 			stolen.mark_gone()
+			sfx.play("canister_stolen", edge_pos)
 			_add_rank(-Tuning.RANK_BLEED_STEAL) # a loss lets the game ease off
 			fx.edge_flash(Tuning.COLOR_STEAL_FLASH)
 			fx.burst(edge_pos, Tuning.COLOR_STEAL_FLASH, LightFx.Size.SPARK)
