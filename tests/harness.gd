@@ -578,5 +578,62 @@ func _ready() -> void:
 	print("SOAK: reached wave %d in %d stepped frames"
 		% [game.wave, soak_frames])
 
+	# --- Furniture fix: stage centering, banner, aim integrity ----
+
+	# (57) The stage-offset helper (pure math): no offset at the
+	# design size, half the surplus per axis beyond it, clamped
+	# to zero on a smaller canvas.
+	_check("stage offset is zero at the 1280x800 design size",
+		Tuning.stage_offset_for(Vector2(1280.0, 800.0)) == Vector2.ZERO)
+	_check("stage offset centers a wider canvas (1422x800 -> 71, 0)",
+		Tuning.stage_offset_for(Vector2(1422.0, 800.0))
+			== Vector2(71.0, 0.0))
+	_check("stage offset centers a taller canvas (1280x1024 -> 0, 112)",
+		Tuning.stage_offset_for(Vector2(1280.0, 1024.0))
+			== Vector2(0.0, 112.0))
+	_check("stage offset splits a wider-and-taller surplus per axis",
+		Tuning.stage_offset_for(Vector2(1600.0, 1000.0))
+			== Vector2(160.0, 100.0))
+	_check("stage offset clamps a smaller canvas to zero",
+		Tuning.stage_offset_for(Vector2(1000.0, 700.0)) == Vector2.ZERO)
+
+	# (58) The wave banner's first baseline is the stage's
+	# vertical center (it drew at 0.32 x VIEW_H before the fix).
+	_check("wave banner draws at the stage's vertical center",
+		game.hud.center_line_y() == Tuning.VIEW_H * 0.5)
+
+	# (59) Mouse aim resolves in global (world) space, so the
+	# stage offset cannot skew it. Headless pins the cursor at
+	# world (0,0) — a known point, which is all the geometry
+	# needs: the same design-space ship position must produce
+	# DIFFERENT facings with and without the offset, each equal
+	# to the global-space expectation. A raw-viewport/local-space
+	# aim would give the same facing in both cases and fail.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.position = Vector2.ZERO
+	game.player.global_position = Vector2(200.0, 150.0)
+	game.player.facing = Vector2.RIGHT
+	await _frames(6)
+	var aim_flat: Vector2 = game.player.facing
+	var expect_flat: Vector2 = (
+		Vector2.ZERO - Vector2(200.0, 150.0)).normalized()
+	_check("aim matches global-space geometry with no stage offset",
+		aim_flat.angle_to(expect_flat) < 0.02)
+	game.position = Vector2(71.0, 112.0)
+	game.player.global_position = Vector2(71.0, 112.0) \
+		+ Vector2(200.0, 150.0)
+	game.player.facing = Vector2.RIGHT
+	await _frames(6)
+	var aim_off: Vector2 = game.player.facing
+	var expect_off: Vector2 = (Vector2.ZERO
+		- (Vector2(71.0, 112.0) + Vector2(200.0, 150.0))).normalized()
+	_check("aim matches global-space geometry under a stage offset",
+		aim_off.angle_to(expect_off) < 0.02)
+	_check("the stage offset measurably changes the aim solution",
+		aim_flat.angle_to(aim_off) > 0.05)
+	game.position = Vector2.ZERO
+
 	print("HARNESS: %d/%d checks passed" % [_passed, _passed + _failed])
 	get_tree().quit(0 if _failed == 0 else 1)
