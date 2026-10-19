@@ -30,6 +30,9 @@ func _ready() -> void:
 	game = packed.instantiate() as Main
 	add_child(game)
 	await _frames(3)
+	# Captured for M3 check (29): the music director's boot state.
+	var boot_music_title: bool = game.music != null \
+		and game.music.mode == MusicDirector.Mode.TITLE
 
 	# (1) Boot reaches TITLE; starting a run places 8 IN_SLOT canisters.
 	_check("boot reaches TITLE", game.state == Main.GameState.TITLE)
@@ -307,6 +310,130 @@ func _ready() -> void:
 		Tuning.WAVE_MAX_ALIVE_BASE + 10 - 1 + Tuning.rank_alive_bonus(1.0),
 		Tuning.WAVE_MAX_ALIVE_CAP + Tuning.rank_alive_bonus(1.0))
 	_check("high rank lifts the concurrent-alive cap", cap_high > cap_low)
+
+	# --- M3: audio assets, music director, sfx routing ----------------
+
+	# (28) Every rendered asset exists; music loop lengths match the
+	# render manifest's exact sample counts (the engine reports OGG
+	# lengths sample-exact for these files; probe deviation was
+	# 0.01 samples, tolerance is 4).
+	var manifest_file: FileAccess = FileAccess.open(
+		"res://audio/manifest.json", FileAccess.READ)
+	_check("audio manifest exists", manifest_file != null)
+	var manifest: Dictionary = {}
+	if manifest_file != null:
+		var parsed_m: Variant = JSON.parse_string(manifest_file.get_as_text())
+		if typeof(parsed_m) == TYPE_DICTIONARY:
+			manifest = parsed_m as Dictionary
+	var music_entries: Dictionary = {}
+	var sfx_entries: Dictionary = {}
+	if manifest.has("music"):
+		music_entries = manifest["music"] as Dictionary
+	if manifest.has("sfx"):
+		sfx_entries = manifest["sfx"] as Dictionary
+	_check("manifest lists 12 music loops and 15 sfx",
+		music_entries.size() == 12 and sfx_entries.size() == 15)
+	var assets_ok: bool = true
+	var lengths_ok: bool = true
+	var mkeys: Array = music_entries.keys()
+	for key: Variant in mkeys:
+		var entry: Dictionary = music_entries[key] as Dictionary
+		var mpath: String = "res://" + String(entry["file"])
+		if not FileAccess.file_exists(mpath):
+			assets_ok = false
+			continue
+		var mstream: AudioStream = load(mpath) as AudioStream
+		if mstream == null:
+			assets_ok = false
+			continue
+		var measured: float = mstream.get_length() * 44100.0
+		var expected: float = float(int(entry["samples"]))
+		if absf(measured - expected) > 4.0:
+			lengths_ok = false
+	var skeys: Array = sfx_entries.keys()
+	for key: Variant in skeys:
+		var entry2: Dictionary = sfx_entries[key] as Dictionary
+		if not FileAccess.file_exists("res://" + String(entry2["file"])):
+			assets_ok = false
+	_check("all audio assets exist on disk", assets_ok)
+	_check("music loop lengths match beat specs within 4 samples",
+		lengths_ok)
+
+	# (29) Music director state machine (headless audio is a dummy
+	# driver: these assert the director's decisions, not audible
+	# output). Boot: TITLE with the title loop the active layer.
+	_check("music director boots in TITLE mode", boot_music_title)
+	game.music.set_mode_title()
+	_check("TITLE mode targets the title loop on and stems silent",
+		game.music.layer_target_db("title") > MusicDirector.SILENT_DB
+			and game.music.layer_target_db("kick")
+				== MusicDirector.SILENT_DB)
+	game.start_run()
+	await _frames(2)
+	_check("run start targets kick and bass on, title off",
+		game.music.layer_target_db("kick") > MusicDirector.SILENT_DB
+			and game.music.layer_target_db("bass")
+				> MusicDirector.SILENT_DB
+			and game.music.layer_target_db("title")
+				== MusicDirector.SILENT_DB)
+	game.rank = 0.1
+	game.music.set_rank(0.1)
+	_check("at rank 0.1 the arp layer stays silent",
+		game.music.layer_target_db("arp") == MusicDirector.SILENT_DB)
+	game.rank = 0.9
+	game.music.set_rank(0.9)
+	_check("at rank 0.9 the arp and drive layers target on",
+		game.music.layer_target_db("arp") > MusicDirector.SILENT_DB
+			and game.music.layer_target_db("drive")
+				> MusicDirector.SILENT_DB)
+
+	# (30) Variant rotation advances through the bank; only the
+	# active variant may target the layer gain.
+	var bass_before: int = game.music.active_variant("bass")
+	game.music.advance_rotation()
+	var bass_after: int = game.music.active_variant("bass")
+	_check("rotation advances the bass variant", bass_after != bass_before)
+	_check("only the active bass variant targets the layer gain",
+		game.music.variant_target_db("bass", bass_after)
+				== game.music.layer_target_db("bass")
+			and game.music.variant_target_db("bass", bass_before)
+				== MusicDirector.SILENT_DB)
+	var arp_before: int = game.music.active_variant("arp")
+	game.music.advance_rotation()
+	_check("rotation advances the arp variant",
+		game.music.active_variant("arp") != arp_before)
+
+	# (31) SFX routing: calls land on pool players with streams set;
+	# one-shot pitch varies inside +/-4%; the collect combo steps
+	# pitch up; music pitch is never touched.
+	var shot_player: AudioStreamPlayer2D = game.sfx.play(
+		"shot", Vector2(300.0, 300.0))
+	_check("shot routes to the sfx pool with a stream",
+		shot_player != null and shot_player.stream != null)
+	_check("shot pitch_scale lands within 0.96..1.04",
+		shot_player != null and shot_player.pitch_scale >= 0.96
+			and shot_player.pitch_scale <= 1.04)
+	_check("sfx players sit at their event positions",
+		shot_player != null
+			and shot_player.global_position == Vector2(300.0, 300.0))
+	var collect_1: AudioStreamPlayer2D = game.sfx.play_collect(
+		Vector2(320.0, 300.0))
+	var collect_2: AudioStreamPlayer2D = game.sfx.play_collect(
+		Vector2(320.0, 300.0))
+	_check("collect combo steps the pitch up between quick pickups",
+		collect_1 != null and collect_2 != null
+			and collect_2.pitch_scale > collect_1.pitch_scale * 1.02)
+	var death_player: AudioStreamPlayer2D = game.sfx.play(
+		"player_death", Vector2(640.0, 400.0))
+	_check("player death routes to the sfx pool",
+		death_player != null and death_player.stream != null)
+	var music_pitch_ok: bool = true
+	var all_music: Array[AudioStreamPlayer] = game.music.all_players()
+	for mp: AudioStreamPlayer in all_music:
+		if mp.pitch_scale != 1.0:
+			music_pitch_ok = false
+	_check("every music player keeps pitch_scale exactly 1.0",
+		music_pitch_ok and all_music.size() == 12)
 
 	print("HARNESS: %d/%d checks passed" % [_passed, _passed + _failed])
 	get_tree().quit(0 if _failed == 0 else 1)

@@ -7,10 +7,10 @@ the salvage multiplier — the run ends when all 8 canisters are gone,
 and the high score is the goal.
 
 Design document: `~/workspace/ripped-off/design.md` (kept outside the
-repo). This build is **Milestone 2 — pressure & variety**, on top of
-the M1 playable core. Later design systems (bosses, bombs, gravity
-wells, powerups, co-op, your-music reactivity, global leaderboard)
-are deliberately not in yet.
+repo). This build is **Milestone 3 — sound**, on top of the M1
+playable core and M2 pressure & variety. Later design systems
+(bosses, bombs, gravity wells, powerups, co-op, your-music
+reactivity, global leaderboard) are deliberately not in yet.
 
 ## What's in M1
 
@@ -55,6 +55,36 @@ are deliberately not in yet.
   a salvage shard where it flies, on top of the M1 costs
   (multiplier halved, rank bled)
 
+## What's new in M3
+
+- **Every sound is synthesized in-repo**: `tools/render_audio.py`
+  (numpy) renders all music stems and SFX offline; re-running it
+  reproduces every asset. Exact sample counts live in
+  `audio/manifest.json`. Music ships as OGG (libvorbis q5), SFX as
+  WAV, everything at 44100 Hz
+- **Trance soundtrack, layered by rank** (`scripts/music_director.gd`):
+  stems loop on one shared 134 BPM sample grid at differing lengths
+  — drums/bass 16 beats, arp 12, perc figure 10, pad 32 — so layers
+  phase against each other (polyrhythm) without ever drifting.
+  Syncopated off-beat bass; Kick B foundation (120→40 Hz sweep,
+  58% of its energy below 80 Hz, measured). Kick + bass are always
+  in during a run; pad joins at rank 0.25, hats + perc at 0.45, arp
+  at 0.60, clap drive at 0.80 — crossfaded by volume only, never
+  effects. Bass and arp each carry a 3-variant pattern bank that a
+  seeded rotation recombines every two drum loops. A separate
+  minimal loop plays on the title / game-over screens
+- **SFX set** (`scripts/sfx.gd`): a pooled set of positional
+  one-shots — fatigueless shot tick (throttled, max 4 concurrent),
+  per-class death pops (grabber thud vs gunner crack), shard pickup
+  with a pitch ladder that climbs during a combo and scales with
+  the haul, three sizes of deposit completion sound, buzz tick,
+  tow latch, canister-stolen warning, player death, wave start,
+  game over, UI start. One-shots get ±4% pitch variance; music
+  pitch is never touched. (`hit_tick.wav` is rendered and loaded,
+  deliberately unwired until the first armoured target exists)
+- Audio buses (Master → Music at −6 dB, SFX at unity) are created
+  in code at startup (`scripts/audio_buses.gd`)
+
 ## Controls
 
 | Action | Keys / buttons |
@@ -85,5 +115,8 @@ at 0 canisters, and death halving the multiplier with an invincible
 respawn — plus M2: gunners in the wave-2 mix, charge-telegraphed
 fire, buzz paid exactly once, death converting bullets to shards,
 rank rising on play and falling on death, and the director getting
-measurably hungrier at high rank. It prints PASS/FAIL per check
-and a total.
+measurably hungrier at high rank — plus M3: audio assets present
+with loop lengths matching the render manifest, the music
+director's title/run state machine and rank layer targets, variant
+rotation, and SFX pool routing with pitch rules. It prints
+PASS/FAIL per check and a total.
