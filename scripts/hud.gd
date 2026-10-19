@@ -153,6 +153,24 @@ func _text(pos: Vector2, content: String, size: int, col: Color) -> void:
 		size, col)
 
 
+## The draw origin (baseline start) that centers `content` on
+## the horizontal point `center_x`, measured with the real
+## font. The previous _text_center passed HORIZONTAL_ALIGNMENT_
+## CENTER with width = VIEW_W at pos.x = VIEW_W * 0.5 — but
+## draw_string's alignment box STARTS at the position and
+## extends `width`, so the box was [640, 1920] and "centered"
+## text was centered on 1280, the stage's right edge: only its
+## left sliver showed ("WA" of WAVE 17, "RIPPE" of the title).
+## Measuring and placing explicitly is exact for any string.
+func centered_origin(content: String, size: int, center_x: float,
+		y: float) -> Vector2:
+	var text_w: float = 0.0
+	if _font != null:
+		text_w = _font.get_string_size(content,
+			HORIZONTAL_ALIGNMENT_LEFT, -1.0, size).x
+	return Vector2(center_x - text_w * 0.5, y)
+
+
 func _text_center(pos: Vector2, content: String, size: int, col: Color) -> void:
-	draw_string(_font, pos, content, HORIZONTAL_ALIGNMENT_CENTER,
-		Tuning.VIEW_W, size, col)
+	draw_string(_font, centered_origin(content, size, pos.x, pos.y),
+		content, HORIZONTAL_ALIGNMENT_LEFT, -1.0, size, col)

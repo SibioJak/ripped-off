@@ -635,5 +635,31 @@ func _ready() -> void:
 		aim_flat.angle_to(aim_off) > 0.05)
 	game.position = Vector2.ZERO
 
+	# (60) Centered text is measured, not alignment-boxed: the
+	# origin from Hud.centered_origin plus half the real
+	# font-measured width lands on the stage center (640) for
+	# every screen that draws through _text_center (wave banner,
+	# PAUSED, title, game over). Regression: draw_string's
+	# CENTER box started at the caller's x and extended VIEW_W,
+	# centering text on the stage's right edge instead — only
+	# "WA" of WAVE 17 reached the screen, at the right border.
+	var center_font: Font = ThemeDB.fallback_font
+	var center_cases: Array = [
+		["WAVE 17", 40],
+		["RIPPED-OFF", 84],
+		["Fire ............ Hold Left Mouse  /  Space  /  Right Trigger  /  A Button", 21],
+	]
+	for case_v: Variant in center_cases:
+		var case_arr: Array = case_v as Array
+		var case_text: String = case_arr[0] as String
+		var case_size: int = case_arr[1] as int
+		var origin: Vector2 = game.hud.centered_origin(
+			case_text, case_size, Tuning.VIEW_W * 0.5, 0.0)
+		var measured: float = center_font.get_string_size(case_text,
+			HORIZONTAL_ALIGNMENT_LEFT, -1.0, case_size).x
+		_check("centered text centers on the stage middle: '%s'"
+			% case_text,
+			absf(origin.x + measured * 0.5 - Tuning.VIEW_W * 0.5) <= 1.0)
+
 	print("HARNESS: %d/%d checks passed" % [_passed, _passed + _failed])
 	get_tree().quit(0 if _failed == 0 else 1)
