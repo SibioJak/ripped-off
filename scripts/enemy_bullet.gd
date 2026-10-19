@@ -9,6 +9,8 @@ extends Node2D
 var velocity: Vector2 = Vector2.ZERO
 var life: float = 0.0
 var buzzed: bool = false # a bullet can pay out buzz exactly once
+var core_color: Color = Tuning.COLOR_ENEMY_BULLET_CORE
+var rim_color: Color = Tuning.COLOR_ENEMY_BULLET_RIM
 
 
 func _ready() -> void:
@@ -20,6 +22,14 @@ func setup(from: Vector2, dir: Vector2) -> void:
 	velocity = dir.normalized() * Tuning.ENEMY_BULLET_SPEED
 	life = Tuning.ENEMY_BULLET_LIFE
 	buzzed = false
+
+
+## Per-shot colours (M4: the Dreadnought fires a hot-magenta
+## variant). Same bullet, same rules — buzz, death-cancel, life.
+func setup_tinted(from: Vector2, dir: Vector2, core: Color, rim: Color) -> void:
+	setup(from, dir)
+	core_color = core
+	rim_color = rim
 
 
 func step(delta: float) -> void:
@@ -38,7 +48,7 @@ func expired() -> bool:
 func _draw() -> void:
 	# Dark rim first, bright core on top: reads at any brightness.
 	draw_circle(Vector2.ZERO, Tuning.ENEMY_BULLET_RADIUS + 2.0,
-		Tuning.COLOR_ENEMY_BULLET_RIM)
+		rim_color)
 	draw_circle(Vector2.ZERO, Tuning.ENEMY_BULLET_RADIUS,
-		Tuning.COLOR_ENEMY_BULLET_CORE)
+		core_color)
 	draw_circle(Vector2.ZERO, 1.6, Color.WHITE)

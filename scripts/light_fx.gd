@@ -10,7 +10,7 @@ extends Node2D
 ## class ordering. Purely visual: nothing here moves the camera
 ## or any entity, ever.
 
-enum Size { SPARK, SMALL, MEDIUM, PLAYER_DEATH }
+enum Size { SPARK, SMALL, MEDIUM, PLAYER_DEATH, CAPITAL }
 
 ## [base_radius, alpha_min, alpha_max, duration,
 ##  ring_min, ring_max, streak_chance, echo_chance]
@@ -19,6 +19,7 @@ const RECIPES: Dictionary = {
 	1: [88.0, 0.30, 0.45, 0.42, 0, 2, 0.35, 0.0], # SMALL: pirate kill
 	2: [116.0, 0.40, 0.55, 0.52, 1, 2, 0.55, 0.25], # MEDIUM: depot blast
 	3: [170.0, 0.55, 0.70, 0.70, 1, 2, 0.60, 0.30], # PLAYER_DEATH
+	4: [205.0, 0.50, 0.65, 0.85, 1, 2, 0.70, 0.35], # CAPITAL: a boss dying
 }
 
 const SHAPE_SNAP: int = 0 # fast attack, fast out

@@ -6,7 +6,8 @@ extends Node2D
 ##
 ##   IN_SLOT  -- sitting in its depot berth (home, but stealable)
 ##   LOOSE    -- free in the arena; momentum applies only here
-##   DRAGGING -- latched by a pirate, hauled toward an edge
+##   DRAGGING -- latched by a pirate (hauled toward an edge) or by
+##               the Dreadnought's grab arm (hauled up to the boss)
 ##   TOWED    -- latched by the player, trailing the ship home
 ##   GONE     -- carried off the arena; the run's clock ticking down
 ##
@@ -21,7 +22,7 @@ var state: State = State.IN_SLOT
 var velocity: Vector2 = Vector2.ZERO
 var slot_index: int = 0
 var slot_pos: Vector2 = Vector2.ZERO
-var holder: Node2D = null # pirate (DRAGGING) or player (TOWED)
+var holder: Node2D = null # pirate or boss (DRAGGING), player (TOWED)
 var tow_start_pos: Vector2 = Vector2.ZERO # latched here; pays the recovery scale
 
 var _slotting: bool = false

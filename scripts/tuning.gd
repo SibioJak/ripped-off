@@ -194,6 +194,71 @@ static func rank_fire_mult(rank: float) -> float:
 	return lerpf(1.0, GUNNER_FIRE_MIN_FRAC, clampf(rank, 0.0, 1.0))
 
 
+# --- Dreadnought (M4: the first boss, every 5th wave) -------------------
+# Tier = wave / 5 (wave 5 -> tier 1, wave 10 -> tier 2, ...). Every boss
+# number lives here so the fight retunes from one place.
+const BOSS_NAME: String = "DREADNOUGHT"
+const BOSS_HULL_HP: int = 120 # Tier-1 hull pool. Reasoning: the player
+	# lands at most ~6.7 hits/s (1 damage per bullet at the 0.15s fire
+	# interval); realistic sustained accuracy on a strafing capital
+	# while also defending canisters is ~60-75%, so ~4-5 effective DPS
+	# -> a 25-30s engaged fight at tier 1. A real fight, not a burst
+	# kill (pirates are 1 HP) and not a marathon.
+const BOSS_PART_HP: int = 25 # per turret / grab arm: ~4-5s of focused fire
+const BOSS_TIER_HP_STEP: float = 0.6 # hull x (1 + 0.6 x (tier - 1))
+const BOSS_TIER_FIRE_STEP: float = 0.07 # turret interval scale step per tier
+const BOSS_TIER_FIRE_FLOOR: float = 0.65 # turret interval scale never below
+const BOSS_TURRET_INTERVAL: float = 2.8 # seconds between turret shots, tier 1
+const BOSS_RADIAL_BASE: int = 14 # ring bullets at an HP threshold, tier 1
+const BOSS_RADIAL_PER_TIER: int = 4 # +4 per tier above 1
+const BOSS_RADIAL_CHARGE_TIME: float = 0.5 # core glow warning before a ring
+const BOSS_SCORE: int = 2500 # base kill value (before multiplier), tier-scaled
+const BOSS_SCORE_TIER_STEP: float = 0.25 # x (1 + 0.25 x (tier - 1))
+const BOSS_PART_SCORE: int = 300 # per broken part, before multiplier
+const BOSS_PART_SHARDS: int = 5
+const BOSS_PART_RANK_GAIN: float = 0.04
+const BOSS_KILL_RANK_GAIN: float = 0.15
+const BOSS_SHARD_FOUNTAIN: int = 25
+const BOSS_TICK_POINTS: int = 5 # per connecting bullet, x multiplier
+const BOSS_ENTRY_TIME: float = 3.0 # descent from the top edge to station
+const BOSS_STATION_Y: float = 170.0 # the top band; the boss never leaves it
+const BOSS_STRAFE_AMP: float = 200.0
+const BOSS_STRAFE_RATE: float = 0.45
+const BOSS_BOB_AMP: float = 8.0
+const BOSS_BOB_RATE: float = 1.2
+const BOSS_GRAB_TELEGRAPH_TIME: float = 1.0 # targeting-line warning
+const BOSS_GRAB_PULL_TIME: float = 2.0 # latch -> consume travel time
+const BOSS_GRAB_COOLDOWN: float = 6.0
+const BOSS_CONSUME_DIST: float = 26.0
+const BOSS_DEATH_TIME: float = 1.5 # staged spectacle duration
+const COLOR_BOSS: Color = Color(1.0, 0.16, 0.55, 1.0) # hot magenta
+const COLOR_BOSS_BULLET_CORE: Color = Color(1.0, 0.6, 0.85, 1.0)
+const COLOR_BOSS_BULLET_RIM: Color = Color(0.28, 0.03, 0.14, 1.0)
+
+
+static func boss_tier(wave: int) -> int:
+	return maxi(wave / 5, 1)
+
+
+static func boss_hull_hp(tier: int) -> int:
+	return int(round(float(BOSS_HULL_HP)
+		* (1.0 + BOSS_TIER_HP_STEP * float(tier - 1))))
+
+
+static func boss_turret_interval(tier: int) -> float:
+	return BOSS_TURRET_INTERVAL * maxf(BOSS_TIER_FIRE_FLOOR,
+		1.0 - BOSS_TIER_FIRE_STEP * float(tier - 1))
+
+
+static func boss_radial_count(tier: int) -> int:
+	return BOSS_RADIAL_BASE + BOSS_RADIAL_PER_TIER * (tier - 1)
+
+
+static func boss_score_value(tier: int) -> int:
+	return int(round(float(BOSS_SCORE)
+		* (1.0 + BOSS_SCORE_TIER_STEP * float(tier - 1))))
+
+
 static func clamp_inside(pos: Vector2, radius: float) -> Vector2:
 	return Vector2(
 		clampf(pos.x, ARENA_LEFT + radius, ARENA_RIGHT - radius),

@@ -18,12 +18,13 @@ extends Node2D
 ## pitch by only +/-2%, so autofire reads as texture in the mix
 ## instead of a stack of zaps on top of it.
 ##
-## Note: "hit_tick" is rendered and loaded, deliberately unwired —
-## every current target dies in one hit, so there is no sustained-
-## fire confirm to tick yet. It is the reserved hook for the first
-## armoured target.
+## "hit_tick" was rendered in M3 as the reserved hook for the
+## first armoured target; M4 wires it for the Dreadnought: every
+## connecting bullet on the capital ticks, throttled to 50 ms here
+## so sustained fire reads as a confirm rhythm, not a buzz.
 
 const POOL_SIZE: int = 24
+const HIT_TICK_MIN_INTERVAL_MS: int = 50
 const SHOT_MIN_INTERVAL_MS: int = 100
 const SHOT_MAX_CONCURRENT: int = 2
 const SHOT_VOLUME_DB: float = -4.0 # shot sits IN the mix, not on top (a tad up from -7 per Chris's re-judgment)
@@ -56,6 +57,11 @@ var _streams: Dictionary = {} # name -> AudioStream
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 var _next: int = 0
 var _last_shot_ms: int = -100000
+var _last_tick_ms: int = -100000
+
+## Test-visible routing counter (name -> successful plays). The
+## harness asserts hit_tick actually routes on boss hits.
+var play_count: Dictionary = {}
 var _collect_step: int = 0
 var _collect_last_ms: int = -100000
 
@@ -84,6 +90,11 @@ func play(sound_name: String, pos: Vector2, base_pitch: float = 1.0,
 		return null
 	var vol: float = volume_db
 	var spread: float = 0.04
+	if sound_name == "hit_tick":
+		var now_tick: int = Time.get_ticks_msec()
+		if now_tick - _last_tick_ms < HIT_TICK_MIN_INTERVAL_MS:
+			return null
+		_last_tick_ms = now_tick
 	if sound_name == "shot":
 		var now: int = Time.get_ticks_msec()
 		if now - _last_shot_ms < SHOT_MIN_INTERVAL_MS:
@@ -100,6 +111,7 @@ func play(sound_name: String, pos: Vector2, base_pitch: float = 1.0,
 	p.pitch_scale = base_pitch * _rng.randf_range(1.0 - spread, 1.0 + spread)
 	p.volume_db = vol
 	p.play()
+	play_count[sound_name] = int(play_count.get(sound_name, 0)) + 1
 	return p
 
 
