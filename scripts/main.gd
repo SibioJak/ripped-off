@@ -51,6 +51,8 @@ var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 # --- Setup ---------------------------------------------------------------
 
 func _ready() -> void:
+	_apply_stage_offset()
+	get_tree().root.size_changed.connect(_on_window_size_changed)
 	_rng.randomize()
 	_font = ThemeDB.fallback_font
 	AudioBuses.ensure()
@@ -74,6 +76,22 @@ func _ready() -> void:
 	add_child(sfx)
 	_sync_hud()
 	queue_redraw()
+
+
+## Center the whole 1280x800 stage in the real visible canvas.
+## Stretch aspect "expand" grows the canvas on any window whose
+## aspect differs from the design view; without this offset the
+## stage hugs the top-left and every screen — the wave banner
+## included — rides high on the physical window. This is a pure
+## presentation translation of the root node: every gameplay
+## coordinate is stage-local and untouched, and mouse aim reads
+## get_global_mouse_position(), which already accounts for it.
+func _apply_stage_offset() -> void:
+	position = Tuning.stage_offset_for(get_viewport_rect().size)
+
+
+func _on_window_size_changed() -> void:
+	_apply_stage_offset()
 
 
 func _make_canisters() -> void:

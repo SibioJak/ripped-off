@@ -149,6 +149,18 @@ static func depot_center() -> Vector2:
 	return Vector2(VIEW_W * 0.5, VIEW_H * 0.5)
 
 
+## Where the 1280x800 stage sits inside the real visible canvas:
+## centered — half the surplus on each axis — and never negative
+## (on a smaller canvas the stage stays pinned top-left, as
+## before). Pure math on plain values, so the harness asserts it
+## directly. Main applies the result as its own position; at
+## exactly 1280x800 it is (0,0) and behaviour is today's.
+static func stage_offset_for(visible: Vector2) -> Vector2:
+	return Vector2(
+		maxf((visible.x - VIEW_W) * 0.5, 0.0),
+		maxf((visible.y - VIEW_H) * 0.5, 0.0))
+
+
 static func slot_position(index: int) -> Vector2:
 	var ang: float = TAU * float(index) / float(SLOT_COUNT) - PI * 0.5
 	return depot_center() + Vector2.from_angle(ang) * SLOT_RING_RADIUS
