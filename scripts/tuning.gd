@@ -208,7 +208,11 @@ const BOSS_PART_HP: int = 25 # per turret / grab arm: ~4-5s of focused fire
 const BOSS_TIER_HP_STEP: float = 0.6 # hull x (1 + 0.6 x (tier - 1))
 const BOSS_TIER_FIRE_STEP: float = 0.07 # turret interval scale step per tier
 const BOSS_TIER_FIRE_FLOOR: float = 0.65 # turret interval scale never below
-const BOSS_TURRET_INTERVAL: float = 2.8 # seconds between turret shots, tier 1
+const BOSS_TURRET_INTERVAL: float = 2.2 # seconds between one turret's
+	# shots, tier 1. Each turret runs its own cycle (M4 pressure fix),
+	# so the pair puts out roughly twice the old shared-cadence rate;
+	# tier scaling (BOSS_TIER_FIRE_STEP down to the FLOOR) applies on
+	# this base: t2 = 2.05s, t3 = 1.89s, floor 1.43s reached at t6.
 const BOSS_RADIAL_BASE: int = 14 # ring bullets at an HP threshold, tier 1
 const BOSS_RADIAL_PER_TIER: int = 4 # +4 per tier above 1
 const BOSS_RADIAL_CHARGE_TIME: float = 0.5 # core glow warning before a ring

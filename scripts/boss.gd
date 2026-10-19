@@ -57,10 +57,13 @@ var _entry_from: Vector2 = Vector2.ZERO
 var _entry_to: Vector2 = Vector2.ZERO
 var _strafe_t: float = 0.0
 var _hull_flash: float = 0.0
-var _fire_t: float = 0.0
-var _turn: int = 0
-var _charging_id: String = ""
-var _charge_t: float = 0.0
+# Per-turret fire cycles (M4 pressure fix: the turrets used to
+# share one timer and alternate, which starved the fight's first
+# phase). Each turret counts its own cooldown down, charges, and
+# fires on its own clock — a broken or charging turret never
+# slows its twin.
+var _fire_t: Dictionary = {} # part id -> seconds until it charges
+var _charge_t: Dictionary = {} # part id -> charge seconds left (< 0: idle)
 var _turret_aim: Dictionary = {} # part id -> Vector2
 var _radial1_done: bool = false
 var _radial2_done: bool = false
@@ -101,7 +104,14 @@ func setup(p_wave: int) -> void:
 	global_position = _entry_from
 	phase = Phase.ENTRY
 	_entry_t = 0.0
-	_fire_t = Tuning.boss_turret_interval(tier) * 0.75
+	# First shots are not instant, and the right turret starts
+	# half an interval behind the left so the pair never settles
+	# into synchronized volleys.
+	var interval: float = Tuning.boss_turret_interval(tier)
+	_fire_t[PART_TURRET_L] = interval * 0.75
+	_fire_t[PART_TURRET_R] = interval * 0.75 + interval * 0.5
+	_charge_t[PART_TURRET_L] = -1.0
+	_charge_t[PART_TURRET_R] = -1.0
 	queue_redraw()
 
 
@@ -185,8 +195,8 @@ func _break_part(part_id: String) -> void:
 	pd["broken"] = true
 	pd["flash"] = 0.0
 	_parts[part_id] = pd
-	if _charging_id == part_id:
-		_charging_id = "" # a dead turret never completes its charge
+	if _charge_t.has(part_id):
+		_charge_t[part_id] = -1.0 # a dead turret never completes its charge
 	if part_id == PART_ARM:
 		_drop_arm_hold() # mid-drag: the canister drops LOOSE
 		_arm_cool = Tuning.BOSS_GRAB_COOLDOWN
@@ -277,37 +287,43 @@ func _step_turrets(delta: float, player_pos: Vector2, player_alive: bool) -> voi
 			var to: Vector2 = player_pos - part_world(pid)
 			if to.length() > 1.0:
 				_turret_aim[pid] = to.normalized()
-	if _charging_id != "":
-		_charge_t -= delta
-		if _charge_t <= 0.0:
-			var fired_id: String = _charging_id
-			_charging_id = ""
-			_fire_charged(fired_id, player_alive)
+	for pid2: String in ids:
+		_step_one_turret(pid2, delta, player_alive)
+
+
+## One turret's independent cycle: cooldown (boss_turret_interval)
+## -> charge (GUNNER_CHARGE_TIME telegraph glow) -> fire ->
+## cooldown. A charge already winding up runs to completion even
+## if the player drops (the shot itself is suppressed in
+## _fire_charged); a cooldown only ticks while the player is up —
+## gunner discipline, applied per turret: no new charges at a
+## downed ship. A broken turret's cycle simply stops; the survivor
+## keeps its own rate unchanged.
+func _step_one_turret(pid: String, delta: float, player_alive: bool) -> void:
+	if is_part_broken(pid):
+		return
+	if float(_charge_t[pid]) >= 0.0:
+		_charge_t[pid] = float(_charge_t[pid]) - delta
+		if float(_charge_t[pid]) <= 0.0:
+			_charge_t[pid] = -1.0
+			_fire_charged(pid, player_alive)
+			_fire_t[pid] = Tuning.boss_turret_interval(tier)
 		return
 	if not player_alive:
-		return # gunner discipline: no firing at a downed ship
-	_fire_t -= delta
-	if _fire_t <= 0.0:
-		var pick: String = _pick_turret()
-		if pick == "":
-			_fire_t = 0.5 # both turrets gone: re-check shortly
-		else:
-			_charging_id = pick
-			_charge_t = Tuning.GUNNER_CHARGE_TIME
-			_fire_t = Tuning.boss_turret_interval(tier)
+		return
+	_fire_t[pid] = float(_fire_t[pid]) - delta
+	if float(_fire_t[pid]) <= 0.0:
+		_charge_t[pid] = Tuning.GUNNER_CHARGE_TIME
 
 
-## Alternate turrets; a broken one is skipped, so the survivor
-## keeps the same cadence alone.
-func _pick_turret() -> String:
-	var first: String = PART_TURRET_L if _turn == 0 else PART_TURRET_R
-	var second: String = PART_TURRET_R if _turn == 0 else PART_TURRET_L
-	_turn = 1 - _turn
-	if not is_part_broken(first):
-		return first
-	if not is_part_broken(second):
-		return second
-	return ""
+## Test lever (the harness parks turret fire to isolate score and
+## contact measurements): long cooldowns on both turrets and any
+## in-progress charge cancelled — neither turret can fire.
+func park_turrets() -> void:
+	_fire_t[PART_TURRET_L] = 999.0
+	_fire_t[PART_TURRET_R] = 999.0
+	_charge_t[PART_TURRET_L] = -1.0
+	_charge_t[PART_TURRET_R] = -1.0
 
 
 func _fire_charged(part_id: String, player_alive: bool) -> void:
@@ -330,9 +346,12 @@ func _fire_charged(part_id: String, player_alive: bool) -> void:
 
 
 func charge_frac(part_id: String) -> float:
-	if _charging_id != part_id:
+	if not _charge_t.has(part_id):
 		return -1.0
-	return clampf(1.0 - _charge_t / Tuning.GUNNER_CHARGE_TIME, 0.0, 1.0)
+	var left: float = float(_charge_t[part_id])
+	if left < 0.0:
+		return -1.0
+	return clampf(1.0 - left / Tuning.GUNNER_CHARGE_TIME, 0.0, 1.0)
 
 
 # --- Radial bursts -------------------------------------------------------------
@@ -445,7 +464,8 @@ func _begin_dying() -> void:
 	phase = Phase.DYING
 	_dying_t = 0.0
 	_death_idx = 0
-	_charging_id = ""
+	_charge_t[PART_TURRET_L] = -1.0
+	_charge_t[PART_TURRET_R] = -1.0
 	_radial_charging = false
 	_radial_pending = 0
 	_drop_arm_hold()

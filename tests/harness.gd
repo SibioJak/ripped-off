@@ -752,8 +752,7 @@ func _ready() -> void:
 	# (71) Hull hits pay tick points through the multiplier and
 	# route the hit_tick confirm (sfx play counter). Turret fire
 	# is parked so no buzz can disturb the exact score delta.
-	boss._fire_t = 999.0
-	boss._charging_id = "" # no in-progress shot may buzz the delta
+	boss.park_turrets() # no in-progress shot may buzz the delta
 	_clear_hostiles()
 	game.multiplier = 1.0
 	game.mult_grace_t = 99.0
@@ -878,8 +877,7 @@ func _ready() -> void:
 	# (76) Player contact with the boss kills the player and does
 	# not damage the boss (no ram-kill on a capital).
 	var boss4: Boss = await _start_boss_wave()
-	boss4._fire_t = 999.0 # isolate contact from turret fire
-	boss4._charging_id = ""
+	boss4.park_turrets() # isolate contact from turret fire
 	_clear_hostiles()
 	var hull_full: int = boss4.hull_hp
 	game.player.invincible_t = 0.0
@@ -892,6 +890,40 @@ func _ready() -> void:
 			break
 	_check("player contact with the boss kills the player, boss undamaged",
 		contact_died and boss4.hull_hp == hull_full)
+
+	# (77) Turret independence (M4 pressure fix): each turret runs
+	# its own cycle (2.2s cooldown + 0.4s charge at tier 1), so in
+	# a 6s window from ACTIVE both turrets fire and the pair lands
+	# at least 4 shots through the real fired-signal path. (The
+	# old shared alternating cadence at 2.8s managed ~2 shots in
+	# the same window, total, from one turret at a time.)
+	var boss5: Boss = await _start_boss_wave()
+	var first_l: int = -1
+	var first_r: int = -1
+	var window_frames: int = 360 # 6.0s of ACTIVE fight time
+	for i: int in range(window_frames):
+		await _frames(1)
+		if first_l < 0 and boss5.shots_left > 0:
+			first_l = i
+		if first_r < 0 and boss5.shots_right > 0:
+			first_r = i
+	_check("both turrets fire in a 6s window (left %d, right %d)"
+		% [boss5.shots_left, boss5.shots_right],
+		boss5.shots_left >= 1 and boss5.shots_right >= 1)
+	_check("independent turrets yield >= 4 shots in 6s (got %d)"
+		% (boss5.shots_left + boss5.shots_right),
+		boss5.shots_left + boss5.shots_right >= 4)
+
+	# (78) The stagger: the right turret's first cycle starts
+	# half an interval behind the left's, so the two first shots
+	# land at clearly different times — never a synchronized
+	# volley. 30 frames = 0.5s at the 60 fps physics step.
+	_check("first shots are staggered by >= 0.5s (left frame %d, right frame %d)"
+		% [first_l, first_r],
+		first_l >= 0 and first_r >= 0
+			and absf(float(first_l - first_r)) >= 30.0)
+	print("BOSS FIRE: left first shot frame %d, right frame %d; window totals L%d R%d"
+		% [first_l, first_r, boss5.shots_left, boss5.shots_right])
 
 	print("HARNESS: %d/%d checks passed" % [_passed, _passed + _failed])
 	get_tree().quit(0 if _failed == 0 else 1)
