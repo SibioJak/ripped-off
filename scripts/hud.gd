@@ -19,6 +19,9 @@ var mode: int = 0 # mirrors Main.GameState: 0 title, 1 running, 2 game over
 var paused: bool = false
 var banner_text: String = ""
 var banner_frac: float = 0.0 # 1 at banner start, fades to 0
+var boss_bar_active: bool = false # boss waves: hull bar at top center
+var boss_bar_label: String = ""
+var boss_bar_frac: float = 1.0 # hull fraction remaining, 0..1
 
 const MODE_TITLE: int = 0
 const MODE_RUNNING: int = 1
@@ -81,6 +84,21 @@ func _draw_run_hud() -> void:
 		var col: Color = Tuning.COLOR_CANISTER if i < canisters_left \
 			else Color(Tuning.COLOR_TEXT_DIM, 0.3)
 		draw_circle(Vector2(px, 25.0), 4.5, col)
+	# Boss hull bar (boss waves only): the Dreadnought's name and
+	# hull fraction, top center — below the HUD strip, clear of
+	# the boss's station band. The label centers through the
+	# measured _text_center path, never an alignment box.
+	if boss_bar_active:
+		var bcx: float = Tuning.VIEW_W * 0.5
+		_text_center(Vector2(bcx, 66.0), boss_bar_label, 18,
+			Tuning.COLOR_BOSS.lerp(Color.WHITE, 0.3))
+		var bw: float = 320.0
+		var bx: float = bcx - bw * 0.5
+		draw_rect(Rect2(bx, 72.0, bw, 7.0),
+			Color(Tuning.COLOR_TEXT_DIM, 0.35))
+		draw_rect(Rect2(bx, 72.0,
+			bw * clampf(boss_bar_frac, 0.0, 1.0), 7.0),
+			Tuning.COLOR_BOSS)
 
 
 func _draw_title() -> void:
