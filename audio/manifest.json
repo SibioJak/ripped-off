@@ -1,0 +1,129 @@
+{
+  "sample_rate": 44100,
+  "bpm": 134.0,
+  "samples_per_beat": 19746,
+  "music": {
+    "kick": {
+      "file": "audio/music/music_kick.ogg",
+      "beats": 16,
+      "samples": 315936
+    },
+    "hats": {
+      "file": "audio/music/music_hats.ogg",
+      "beats": 16,
+      "samples": 315936
+    },
+    "perc": {
+      "file": "audio/music/music_perc.ogg",
+      "beats": 10,
+      "samples": 197460
+    },
+    "drive": {
+      "file": "audio/music/music_drive.ogg",
+      "beats": 16,
+      "samples": 315936
+    },
+    "bass_a": {
+      "file": "audio/music/music_bass_a.ogg",
+      "beats": 16,
+      "samples": 315936
+    },
+    "bass_b": {
+      "file": "audio/music/music_bass_b.ogg",
+      "beats": 16,
+      "samples": 315936
+    },
+    "bass_c": {
+      "file": "audio/music/music_bass_c.ogg",
+      "beats": 16,
+      "samples": 315936
+    },
+    "arp_a": {
+      "file": "audio/music/music_arp_a.ogg",
+      "beats": 12,
+      "samples": 236952
+    },
+    "arp_b": {
+      "file": "audio/music/music_arp_b.ogg",
+      "beats": 12,
+      "samples": 236952
+    },
+    "arp_c": {
+      "file": "audio/music/music_arp_c.ogg",
+      "beats": 12,
+      "samples": 236952
+    },
+    "pad": {
+      "file": "audio/music/music_pad.ogg",
+      "beats": 32,
+      "samples": 631872
+    },
+    "title": {
+      "file": "audio/music/music_title.ogg",
+      "beats": 16,
+      "samples": 315936
+    }
+  },
+  "sfx": {
+    "shot": {
+      "file": "audio/sfx/shot.wav",
+      "samples": 3307
+    },
+    "death_grabber": {
+      "file": "audio/sfx/death_grabber.wav",
+      "samples": 11466
+    },
+    "death_gunner": {
+      "file": "audio/sfx/death_gunner.wav",
+      "samples": 8820
+    },
+    "hit_tick": {
+      "file": "audio/sfx/hit_tick.wav",
+      "samples": 1323
+    },
+    "shard_collect": {
+      "file": "audio/sfx/shard_collect.wav",
+      "samples": 3087
+    },
+    "recovery_small": {
+      "file": "audio/sfx/recovery_small.wav",
+      "samples": 8820
+    },
+    "recovery_mid": {
+      "file": "audio/sfx/recovery_mid.wav",
+      "samples": 14994
+    },
+    "recovery_large": {
+      "file": "audio/sfx/recovery_large.wav",
+      "samples": 22932
+    },
+    "buzz": {
+      "file": "audio/sfx/buzz.wav",
+      "samples": 1984
+    },
+    "tow_latch": {
+      "file": "audio/sfx/tow_latch.wav",
+      "samples": 4410
+    },
+    "canister_stolen": {
+      "file": "audio/sfx/canister_stolen.wav",
+      "samples": 16758
+    },
+    "player_death": {
+      "file": "audio/sfx/player_death.wav",
+      "samples": 28665
+    },
+    "wave_start": {
+      "file": "audio/sfx/wave_start.wav",
+      "samples": 19845
+    },
+    "game_over": {
+      "file": "audio/sfx/game_over.wav",
+      "samples": 44100
+    },
+    "ui_start": {
+      "file": "audio/sfx/ui_start.wav",
+      "samples": 3969
+    }
+  }
+}
