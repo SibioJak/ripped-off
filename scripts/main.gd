@@ -571,10 +571,19 @@ func _resolve_steals_and_leavers() -> void:
 			_add_rank(-Tuning.RANK_BLEED_STEAL) # a loss lets the game ease off
 			fx.edge_flash(Tuning.COLOR_STEAL_FLASH)
 			fx.burst(edge_pos, Tuning.COLOR_STEAL_FLASH, LightFx.Size.SPARK)
-		if p.phase == Pirate.Phase.LEAVE \
-				and not grown.grow(50.0).has_point(p.global_position):
-			pirates.erase(p)
-			p.queue_free()
+		if p.phase == Pirate.Phase.LEAVE:
+			var past_boundary: bool = not grown.grow(50.0).has_point(
+				p.global_position)
+			# Exit watchdog: whatever went wrong out there, a leaver
+			# older than the Tuning limit is freed on the spot — no
+			# pirate may ever park and hold a wave hostage.
+			var timed_out: bool = p.exit_age >= Tuning.EXIT_WATCHDOG_TIME
+			if past_boundary or timed_out:
+				if timed_out and not past_boundary:
+					fx.burst(Tuning.clamp_inside(p.global_position, 2.0),
+						p.draw_color, LightFx.Size.SPARK)
+				pirates.erase(p)
+				p.queue_free()
 
 
 func _safe_respawn_pos() -> Vector2:

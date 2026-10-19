@@ -34,6 +34,11 @@ var fire_interval_scale: float = 1.0 # rank scaling, from Tuning via Main
 ## it resets when this pirate latches a fresh canister.
 var buzzed_this_drag: bool = false
 
+## Seconds spent continuously in LEAVE. Main's exit watchdog reads
+## this: a leaver older than Tuning.EXIT_WATCHDOG_TIME is force-
+## freed, so no pirate can block wave progression indefinitely.
+var exit_age: float = 0.0
+
 var _speed: float = 120.0
 var _drag_speed: float = 90.0
 var _telegraph_t: float = 0.0
@@ -102,6 +107,10 @@ func shard_count() -> int:
 
 func step(delta: float, canisters: Array[Canister]) -> void:
 	_flash_t += delta
+	if phase == Phase.LEAVE:
+		exit_age += delta
+	else:
+		exit_age = 0.0
 	match phase:
 		Phase.TELEGRAPH:
 			velocity = Vector2.ZERO

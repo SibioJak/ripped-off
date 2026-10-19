@@ -16,6 +16,10 @@ const DEPOT_RADIUS: float = 118.0 # tow a canister inside this ring to deposit
 const SLOT_COUNT: int = 8
 const SLOT_RING_RADIUS: float = 62.0 # slots sit on a ring around the center
 const EXIT_MARGIN: float = 30.0 # a dragged canister this far past the wall is gone
+const EXIT_TARGET_DEPTH: float = 110.0 # exit points sit this far past the wall — BEYOND
+	# the leaver despawn boundary (EXIT_MARGIN + 50), so a pirate steering
+	# at full speed crosses the boundary and is freed before it can park
+const EXIT_WATCHDOG_TIME: float = 6.0 # a pirate in LEAVE longer than this is force-freed
 
 # --- Canisters ------------------------------------------------------
 const CANISTER_RADIUS: float = 11.0
@@ -184,8 +188,11 @@ static func clamp_inside(pos: Vector2, radius: float) -> Vector2:
 		clampf(pos.y, ARENA_TOP + radius, ARENA_BOTTOM - radius))
 
 
-## A point just outside the nearest arena wall from `pos` — where a
-## dragging pirate escapes and where an empty pirate leaves.
+## A point well outside the nearest arena wall from `pos` — where a
+## dragging pirate escapes and where an empty pirate leaves. It
+## must sit beyond Main's leaver despawn boundary: steering has no
+## arrival slowdown, so a point inside the boundary is a parking
+## spot the pirate jitters around forever (the M3 exit stall).
 static func nearest_exit_point(pos: Vector2) -> Vector2:
 	var d_left: float = pos.x - ARENA_LEFT
 	var d_right: float = ARENA_RIGHT - pos.x
@@ -193,9 +200,9 @@ static func nearest_exit_point(pos: Vector2) -> Vector2:
 	var d_bottom: float = ARENA_BOTTOM - pos.y
 	var best: float = minf(minf(d_left, d_right), minf(d_top, d_bottom))
 	if best == d_left:
-		return Vector2(ARENA_LEFT - EXIT_MARGIN - 20.0, pos.y)
+		return Vector2(ARENA_LEFT - EXIT_TARGET_DEPTH, pos.y)
 	if best == d_right:
-		return Vector2(ARENA_RIGHT + EXIT_MARGIN + 20.0, pos.y)
+		return Vector2(ARENA_RIGHT + EXIT_TARGET_DEPTH, pos.y)
 	if best == d_top:
-		return Vector2(pos.x, ARENA_TOP - EXIT_MARGIN - 20.0)
-	return Vector2(pos.x, ARENA_BOTTOM + EXIT_MARGIN + 20.0)
+		return Vector2(pos.x, ARENA_TOP - EXIT_TARGET_DEPTH)
+	return Vector2(pos.x, ARENA_BOTTOM + EXIT_TARGET_DEPTH)
