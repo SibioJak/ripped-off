@@ -14,7 +14,7 @@ extends Node2D
 ## shot gets its own discipline (Chris's M3 ear verdict: a firing
 ## sound "basically becomes part of the soundtrack — it's just
 ## prevalent"): it throttles harder (100 ms minimum interval, max 2
-## concurrent), plays ~-7 dB under the other one-shots, and varies
+## concurrent), plays ~-4 dB under the other one-shots, and varies
 ## pitch by only +/-2%, so autofire reads as texture in the mix
 ## instead of a stack of zaps on top of it.
 ##
@@ -26,7 +26,7 @@ extends Node2D
 const POOL_SIZE: int = 24
 const SHOT_MIN_INTERVAL_MS: int = 100
 const SHOT_MAX_CONCURRENT: int = 2
-const SHOT_VOLUME_DB: float = -7.0 # shot sits IN the mix, not on top
+const SHOT_VOLUME_DB: float = -4.0 # shot sits IN the mix, not on top (a tad up from -7 per Chris's re-judgment)
 const SHOT_PITCH_SPREAD: float = 0.02 # narrower than the usual +/-4%
 const COLLECT_RESET_MS: int = 800 # combo ladder resets after this quiet
 const COLLECT_STEP_SEMITONES: Array[int] = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24]
