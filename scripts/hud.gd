@@ -132,8 +132,17 @@ func _draw_gameover() -> void:
 		Tuning.COLOR_TEXT_DIM)
 
 
+## The first baseline of the centered screen lines (the wave
+## banner, the PAUSED note): the stage's vertical center. The
+## banner used to draw at 0.32 x VIEW_H, up toward the top of
+## the stage, where on a real window it read as almost off
+## screen; the between-wave beat belongs in the middle.
+func center_line_y() -> float:
+	return Tuning.VIEW_H * 0.5
+
+
 func _draw_center_lines(lines: Array[String], size: int, col: Color) -> void:
-	var y: float = Tuning.VIEW_H * 0.32
+	var y: float = center_line_y()
 	for line: String in lines:
 		_text_center(Vector2(Tuning.VIEW_W * 0.5, y), line, size, col)
 		y += float(size) + 10.0
