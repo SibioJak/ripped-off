@@ -63,6 +63,70 @@ func _drag_out_through(edge: int) -> bool:
 	return gone and freed
 
 
+## M4 helper: wait for the given boss to finish its descent and
+## reach ACTIVE. Returns the boss (or null if it never spawned).
+func _await_boss_active(b: Boss) -> Boss:
+	if b == null:
+		return null
+	for i: int in range(500):
+		await _frames(1)
+		if b.phase == Boss.Phase.ACTIVE:
+			break
+	return b
+
+
+## M4 helper: start a fresh run and drive it into the wave-5 boss
+## wave through Main's real wave flow; the player parks far away,
+## invincible, so the boss's systems run undisturbed.
+func _start_boss_wave() -> Boss:
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.wave = 4
+	game._start_next_wave() # -> wave 5: a boss wave
+	game.player.global_position = Vector2(120.0, 680.0)
+	game.player.invincible_t = 1000000000.0
+	var b: Boss = null
+	for i: int in range(300):
+		await _frames(1)
+		if game.bosses.size() > 0:
+			b = game.bosses[0]
+			break
+	return await _await_boss_active(b)
+
+
+## M4 helper: clear enemy bullets and shards WITHOUT touching the
+## boss (game.clear_field() would free it — it is a start_run lever).
+func _clear_hostiles() -> void:
+	for eb: EnemyBullet in game.enemy_bullets:
+		eb.queue_free()
+	game.enemy_bullets.clear()
+	for s: Shard in game.shards:
+		s.queue_free()
+	game.shards.clear()
+
+
+## M4 helper: land `hits` real player bullets on the boss's hull
+## (aimed at the hull-circle zone, clear of every part circle).
+func _shoot_hull(b: Boss, hits: int) -> void:
+	for i: int in range(hits):
+		var hp: Vector2 = b.global_position + Vector2(0.0, 10.0)
+		game.spawn_bullet(hp + Vector2(-50.0, 0.0), Vector2.RIGHT)
+		await _frames(2)
+
+
+## M4 helper: land real player bullets on one boss part until it
+## breaks (bounded). Returns true if the part broke.
+func _shoot_part_until_broken(b: Boss, part_id: String) -> bool:
+	for i: int in range(80):
+		if b.is_part_broken(part_id):
+			return true
+		var pp: Vector2 = b.part_world(part_id)
+		game.spawn_bullet(pp + Vector2(-40.0, 0.0), Vector2.RIGHT)
+		await _frames(2)
+	return b.is_part_broken(part_id)
+
+
 func _ready() -> void:
 	var packed: PackedScene = load("res://scenes/main.tscn") as PackedScene
 	game = packed.instantiate() as Main
@@ -660,6 +724,174 @@ func _ready() -> void:
 		_check("centered text centers on the stage middle: '%s'"
 			% case_text,
 			absf(origin.x + measured * 0.5 - Tuning.VIEW_W * 0.5) <= 1.0)
+
+	# --- M4: the Dreadnought (first boss, every 5th wave) ---------
+
+	# (69) Wave 5 is a boss wave: the director's pirate quota is
+	# replaced by the single boss, which enters and reaches its
+	# station; no pirates spawn.
+	var boss: Boss = await _start_boss_wave()
+	await _frames(120)
+	_check("wave 5 is a boss wave: Dreadnought reaches station, no pirate quota",
+		boss != null and boss.phase == Boss.Phase.ACTIVE
+			and game.boss_wave and game.director.quota_exhausted()
+			and game.pirates.is_empty())
+
+	# (70) A turret takes damage through the real bullet path,
+	# breaks at its HP, and stops firing — while the other turret
+	# keeps the cadence alone.
+	var turret_broke: bool = await _shoot_part_until_broken(
+		boss, Boss.PART_TURRET_L)
+	var sl0: int = boss.shots_left
+	var sr0: int = boss.shots_right
+	await _frames(300)
+	_check("turret breaks at its HP and stops firing; the other keeps firing",
+		turret_broke and boss.shots_left == sl0
+			and boss.shots_right > sr0)
+
+	# (71) Hull hits pay tick points through the multiplier and
+	# route the hit_tick confirm (sfx play counter). Turret fire
+	# is parked so no buzz can disturb the exact score delta.
+	boss._fire_t = 999.0
+	boss._charging_id = "" # no in-progress shot may buzz the delta
+	_clear_hostiles()
+	game.multiplier = 1.0
+	game.mult_grace_t = 99.0
+	var tick_score0: int = game.score
+	var tick_plays0: int = int(game.sfx.play_count.get("hit_tick", 0))
+	for i: int in range(3):
+		var hp1: Vector2 = boss.global_position + Vector2(0.0, 10.0)
+		game.spawn_bullet(hp1 + Vector2(-50.0, 0.0), Vector2.RIGHT)
+		await _frames(8) # > the 50 ms hit_tick throttle
+	_check("hull hits pay tick points and route hit_tick",
+		game.score - tick_score0 == 3 * Tuning.BOSS_TICK_POINTS
+			and int(game.sfx.play_count.get("hit_tick", 0)) - tick_plays0 == 3)
+
+	# (72) Grab arm: the telegraph precedes the latch; a slotted
+	# canister leaves IN_SLOT under arm drag; breaking the arm
+	# mid-drag drops it LOOSE; a completed drag on a fresh boss
+	# consumes a canister (GONE, count drops, wave does not end).
+	game.bosses.erase(boss)
+	boss.queue_free()
+	var boss2: Boss = await _await_boss_active(game.spawn_boss(5))
+	var arm_target: Canister = null
+	for i: int in range(700):
+		await _frames(1)
+		for c: Canister in game.canisters:
+			if c.state == Canister.State.DRAGGING and c.holder == boss2:
+				arm_target = c
+				break
+		if arm_target != null:
+			break
+	var arm_broke: bool = await _shoot_part_until_broken(
+		boss2, Boss.PART_ARM)
+	_check("arm telegraph precedes latch; slotted canister drags; arm break drops it LOOSE",
+		arm_target != null and boss2.arm_telegraphed_once
+			and arm_broke and arm_target.state == Canister.State.LOOSE)
+	game.bosses.erase(boss2)
+	boss2.queue_free()
+	var boss3: Boss = await _await_boss_active(game.spawn_boss(5))
+	var cans_before: int = game.canisters_remaining()
+	var eaten: Canister = null
+	for i: int in range(700):
+		await _frames(1)
+		for c: Canister in game.canisters:
+			if c.state == Canister.State.DRAGGING and c.holder == boss3:
+				eaten = c
+				break
+		if eaten != null:
+			break
+	var consumed: bool = false
+	if eaten != null:
+		for i: int in range(400):
+			await _frames(1)
+			if eaten.state == Canister.State.GONE:
+				consumed = true
+				break
+	_check("a completed arm drag consumes the canister (GONE, count drops)",
+		consumed and game.canisters_remaining() == cans_before - 1
+			and game.wave == 5 and game.boss_wave)
+
+	# (73) Radial bursts fire once at each hull threshold (66%,
+	# then 33%) — a ring of bullets at the crossing, and no
+	# repeat while the hull stays below the line.
+	var eb_base: int = game.enemy_bullets.size()
+	var guard1: int = 0
+	while boss3.hull_hp > 79 and guard1 < 200:
+		guard1 += 1
+		await _shoot_hull(boss3, 1)
+	for i: int in range(120):
+		await _frames(1)
+		if boss3.radial_count >= 1:
+			break
+	var ring_jump: bool = game.enemy_bullets.size() >= eb_base + 8
+	var guard2: int = 0
+	while boss3.hull_hp > 39 and guard2 < 200:
+		guard2 += 1
+		await _shoot_hull(boss3, 1)
+	for i: int in range(120):
+		await _frames(1)
+		if boss3.radial_count >= 2:
+			break
+	await _shoot_hull(boss3, 10)
+	await _frames(90)
+	_check("radial bursts fire once at the 66% and 33% hull thresholds",
+		ring_jump and boss3.radial_count == 2)
+
+	# (74) Boss death: the staged sequence completes, the payout
+	# lands, the shard fountain spawns, and the wave advances —
+	# even with a player death in the middle of the spectacle.
+	var death_score0: int = game.score
+	for i: int in range(200):
+		await _frames(1)
+		if boss3.phase == Boss.Phase.DYING:
+			break
+		if i % 2 == 0:
+			await _shoot_hull(boss3, 1)
+	var saw_dying: bool = boss3.phase == Boss.Phase.DYING
+	game.player.invincible_t = 0.0
+	game.kill_player() # death DURING the death sequence
+	var player_died_mid_death: bool = not game.player.alive
+	for i: int in range(300):
+		await _frames(1)
+		if game.wave == 6:
+			break
+	_check("boss death completes: payout lands, fountain spawns, wave advances",
+		saw_dying and player_died_mid_death and game.wave == 6
+			and game.bosses.is_empty() and not game.boss_wave
+			and game.score - death_score0
+				>= Tuning.boss_score_value(1)
+			and game.shards.size() >= 12)
+
+	# (75) Tier scaling: a wave-10 boss has strictly more hull
+	# than a wave-5 boss.
+	var t5: Boss = game.spawn_boss(5)
+	var t10: Boss = game.spawn_boss(10)
+	_check("tier scaling: wave-10 hull strictly exceeds wave-5",
+		t10.max_hull_hp > t5.max_hull_hp
+			and t5.max_hull_hp == Tuning.BOSS_HULL_HP)
+	game.bosses.erase(t5)
+	t5.queue_free()
+	game.bosses.erase(t10)
+	t10.queue_free()
+
+	# (76) Player contact with the boss kills the player and does
+	# not damage the boss (no ram-kill on a capital).
+	var boss4: Boss = await _start_boss_wave()
+	boss4._fire_t = 999.0 # isolate contact from turret fire
+	boss4._charging_id = ""
+	_clear_hostiles()
+	var hull_full: int = boss4.hull_hp
+	game.player.invincible_t = 0.0
+	game.player.global_position = boss4.global_position
+	var contact_died: bool = false
+	for i: int in range(15):
+		await _frames(1)
+		if not game.player.alive:
+			contact_died = true
+			break
+	_check("player contact with the boss kills the player, boss undamaged",
+		contact_died and boss4.hull_hp == hull_full)
 
 	print("HARNESS: %d/%d checks passed" % [_passed, _passed + _failed])
 	get_tree().quit(0 if _failed == 0 else 1)

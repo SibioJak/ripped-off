@@ -7,10 +7,11 @@ the salvage multiplier — the run ends when all 8 canisters are gone,
 and the high score is the goal.
 
 Design document: `~/workspace/ripped-off/design.md` (kept outside the
-repo). This build is **Milestone 3 — sound**, on top of the M1
-playable core and M2 pressure & variety. Later design systems
-(bosses, bombs, gravity wells, powerups, co-op, your-music
-reactivity, global leaderboard) are deliberately not in yet.
+repo). This build is **Milestone 4 — the first boss**, on top of the
+M1 playable core, M2 pressure & variety and the M3 sound build.
+Later design systems (the other bosses, bombs, gravity wells,
+powerups, co-op, your-music reactivity, global leaderboard) are
+deliberately not in yet.
 
 ## What's in M1
 
@@ -80,10 +81,54 @@ reactivity, global leaderboard) are deliberately not in yet.
   the haul, three sizes of deposit completion sound, buzz tick,
   tow latch, canister-stolen warning, player death, wave start,
   game over, UI start. One-shots get ±4% pitch variance; music
-  pitch is never touched. (`hit_tick.wav` is rendered and loaded,
-  deliberately unwired until the first armoured target exists)
+  pitch is never touched. (`hit_tick.wav` was rendered and loaded
+  unwired in M3; M4 wires it for the Dreadnought — see below)
 - Audio buses (Master → Music at −6 dB, SFX at unity) are created
   in code at startup (`scripts/audio_buses.gd`)
+
+## What's new in M4
+
+- **The Dreadnought** (`scripts/boss.gd`): the first boss, on every
+  5th wave. The director's pirate quota is replaced by the single
+  capital; the wave clears only when it dies. A "WARNING —
+  DREADNOUGHT" banner plays, then it descends from the top edge
+  into a station in the arena's top band (damageable from the
+  first frame — no invulnerable phases anywhere), strafing slowly
+  with a slight bob. It never leaves the arena and never chases
+- **Anatomy**: a tier-scaled hull (120 HP at tier 1) plus three
+  breakable parts at 25 HP each — two turrets and a grab arm —
+  all circle hit tests, parts before hull. A broken part stops
+  permanently, pays a score bonus, bursts shards, and draws dark
+  with occasional sparks. Tier = wave / 5: hull ×(1 + 0.6×(tier−1)),
+  turret fire interval ×max(0.65, 1 − 0.07×(tier−1)), radial count
+  +4 per tier, score value up. All numbers in `scripts/tuning.gd`
+- **Turrets**: aimed shots with the gunner's 0.4s charge-telegraph
+  discipline, alternating; from tier 2 each shot is a 3-shot
+  spread. Boss bullets are the standard enemy bullet with a
+  hot-magenta tint — buzz and death-cancel rules apply unchanged
+- **Grab arm**: targets the nearest slotted canister (loose ones
+  if none are slotted; never a towed one), warns with a pulsing
+  targeting line for 1s, rips it from its berth (the canister
+  machine's DRAGGING state, held by the boss) and reels it in
+  over ~2s; a completed reel consumes it through the shared
+  steal path. Breaking the arm mid-drag drops the canister LOOSE
+- **Radial bursts**: at 66% and 33% hull, once each — a 0.5s core
+  charge glow, then a ring of 14 + 4×(tier−1) bullets
+- **Tick points, wired**: every connecting bullet on hull or part
+  pays 5 × multiplier immediately and routes the M3 `hit_tick`
+  confirm, throttled to 50 ms in the sfx director
+- **Death, staged**: over ~1.5s a detonation chain walks the hull
+  (small bursts at the parts, medium at the hull, then capital-
+  class light bursts — a new `LightFx` recipe at 205px base — with
+  wobbled shockwave rings), parts tear off as rotating debris
+  chunks, and the kill pays the boss value × multiplier, a
+  25-shard fountain and a large rank gain. A player death during
+  the sequence cancels nothing. Contact with the hull or a live
+  part kills the player at any speed — a capital cannot be rammed
+- **HUD**: a boss hull bar at the top center during boss waves —
+  "DREADNOUGHT" (+ tier) and the hull fraction, labeled through
+  the measured-centering text path. Boss fights ride the existing
+  rank-layered soundtrack; no new music
 
 ## Controls
 
@@ -118,5 +163,11 @@ rank rising on play and falling on death, and the director getting
 measurably hungrier at high rank — plus M3: audio assets present
 with loop lengths matching the render manifest, the music
 director's title/run state machine and rank layer targets, variant
-rotation, and SFX pool routing with pitch rules. It prints
-PASS/FAIL per check and a total.
+rotation, and SFX pool routing with pitch rules — plus M4: wave 5
+is a boss wave with no pirate quota, a turret breaks and stops
+firing, hull hits pay tick points and route hit_tick, the grab
+arm's telegraph/drag/drop/consume cycle, radial bursts firing once
+per hull threshold, the full death sequence paying out and
+advancing the wave (with a player death mid-spectacle), tier
+scaling, and boss contact killing the player without damaging the
+boss. It prints PASS/FAIL per check and a total (77 checks).
