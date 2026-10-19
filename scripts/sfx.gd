@@ -10,9 +10,13 @@ extends Node2D
 ## sound pans across the arena but never vanishes at the edges);
 ## collection audio scales with the haul.
 ##
-## A small round-robin pool keeps simultaneous sounds bounded: the
-## shot sound additionally throttles (45 ms minimum interval, max 4
-## concurrent) so autofire cannot stack into mush.
+## A small round-robin pool keeps simultaneous sounds bounded. The
+## shot gets its own discipline (Chris's M3 ear verdict: a firing
+## sound "basically becomes part of the soundtrack — it's just
+## prevalent"): it throttles harder (100 ms minimum interval, max 2
+## concurrent), plays ~-7 dB under the other one-shots, and varies
+## pitch by only +/-2%, so autofire reads as texture in the mix
+## instead of a stack of zaps on top of it.
 ##
 ## Note: "hit_tick" is rendered and loaded, deliberately unwired —
 ## every current target dies in one hit, so there is no sustained-
@@ -20,8 +24,10 @@ extends Node2D
 ## armoured target.
 
 const POOL_SIZE: int = 24
-const SHOT_MIN_INTERVAL_MS: int = 45
-const SHOT_MAX_CONCURRENT: int = 4
+const SHOT_MIN_INTERVAL_MS: int = 100
+const SHOT_MAX_CONCURRENT: int = 2
+const SHOT_VOLUME_DB: float = -7.0 # shot sits IN the mix, not on top
+const SHOT_PITCH_SPREAD: float = 0.02 # narrower than the usual +/-4%
 const COLLECT_RESET_MS: int = 800 # combo ladder resets after this quiet
 const COLLECT_STEP_SEMITONES: Array[int] = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24]
 const RECOVERY_MID_MIN: int = 250 # deposit base points -> mid sound
@@ -76,6 +82,8 @@ func play(sound_name: String, pos: Vector2, base_pitch: float = 1.0,
 		volume_db: float = 0.0) -> AudioStreamPlayer2D:
 	if not _streams.has(sound_name):
 		return null
+	var vol: float = volume_db
+	var spread: float = 0.04
 	if sound_name == "shot":
 		var now: int = Time.get_ticks_msec()
 		if now - _last_shot_ms < SHOT_MIN_INTERVAL_MS:
@@ -83,12 +91,14 @@ func play(sound_name: String, pos: Vector2, base_pitch: float = 1.0,
 		if _count_playing("shot") >= SHOT_MAX_CONCURRENT:
 			return null
 		_last_shot_ms = now
+		vol += SHOT_VOLUME_DB
+		spread = SHOT_PITCH_SPREAD
 	var p: AudioStreamPlayer2D = _pool[_next]
 	_next = (_next + 1) % _pool.size()
 	p.stream = _streams[sound_name] as AudioStream
 	p.global_position = pos
-	p.pitch_scale = base_pitch * _rng.randf_range(0.96, 1.04)
-	p.volume_db = volume_db
+	p.pitch_scale = base_pitch * _rng.randf_range(1.0 - spread, 1.0 + spread)
+	p.volume_db = vol
 	p.play()
 	return p
 

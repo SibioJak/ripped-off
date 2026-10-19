@@ -67,7 +67,7 @@
   "sfx": {
     "shot": {
       "file": "audio/sfx/shot.wav",
-      "samples": 3307
+      "samples": 1764
     },
     "death_grabber": {
       "file": "audio/sfx/death_grabber.wav",
@@ -83,7 +83,7 @@
     },
     "shard_collect": {
       "file": "audio/sfx/shard_collect.wav",
-      "samples": 3087
+      "samples": 2205
     },
     "recovery_small": {
       "file": "audio/sfx/recovery_small.wav",

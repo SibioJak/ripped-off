@@ -414,14 +414,18 @@ def render_title_loop() -> np.ndarray:
 # ---------------------------------------------------------------- SFX synths
 
 def sfx_shot() -> np.ndarray:
-    """Constant-fire sound: very short, low-mid body, nothing harsh."""
-    n = int(0.075 * SR)
+    """Firing sound, re-aimed after Chris's M3 ear verdict: a shot
+    fires constantly, so it becomes part of the soundtrack — it must
+    sit IN the mix, not on top. Dry soft percussive tick: lowpassed
+    noise burst (~1200 Hz) plus a very short low thump. No zap, no
+    pitch sweep, no bright edge; rendered quiet (peak 0.26) and the
+    game plays it back lower still (see scripts/sfx.gd)."""
+    n = int(0.04 * SR)
     t = t_axis(n)
-    freq = 300.0 + 620.0 * np.exp(-t / 0.012)
-    phase = 2.0 * np.pi * np.cumsum(freq) / SR
-    x = np.sin(phase) * np.exp(-t / 0.020)
-    x += 0.35 * np.sin(2.0 * np.pi * 190.0 * t) * np.exp(-t / 0.030)
-    return norm_to(x, 0.50)
+    local = np.random.default_rng(44101)  # local: global RNG untouched
+    burst = lowpass(local.standard_normal(n), 1200.0) * np.exp(-t / 0.007)
+    thump = np.sin(2.0 * np.pi * 170.0 * t) * np.exp(-t / 0.010)
+    return norm_to(burst * 1.4 + thump * 0.9, 0.26)
 
 
 def sfx_death_grabber() -> np.ndarray:
@@ -457,13 +461,23 @@ def sfx_hit_tick() -> np.ndarray:
 
 
 def sfx_shard_collect() -> np.ndarray:
-    """Soft blip; the game steps its pitch up during a combo."""
-    n = int(0.07 * SR)
+    """Salvage pickup, re-aimed after Chris's M3 ear verdict: the old
+    sine blip with a rising glide read as a water droplet / bubbles.
+    This is a DRY metallic chink: a ~2 ms broadband click transient
+    plus three inharmonic partials at CONSTANT frequencies (no pitch
+    sweep anywhere), higher partials decaying faster. The combo pitch
+    ladder in scripts/sfx.gd still steps between pickups — discrete
+    steps, not a glide."""
+    n = int(0.05 * SR)
     t = t_axis(n)
-    freq = 660.0 + 220.0 * (1.0 - np.exp(-t / 0.010))
-    phase = 2.0 * np.pi * np.cumsum(freq) / SR
-    x = np.sin(phase) * (1.0 - np.exp(-t / 0.002)) * np.exp(-t / 0.020)
-    return norm_to(x, 0.42)
+    local = np.random.default_rng(44102)  # local: global RNG untouched
+    click = local.standard_normal(n) * np.exp(-t / 0.0008) * (t < 0.0025)
+    x = 1.1 * click
+    for f, g, tau in ((1560.0, 0.62, 0.013),
+                      (2350.0, 0.45, 0.011),
+                      (3490.0, 0.30, 0.008)):
+        x += g * np.sin(2.0 * np.pi * f * t) * np.exp(-t / tau)
+    return norm_to(x, 0.35)
 
 
 def _warm_note(freq: float, dur: float, gain: float) -> np.ndarray:
