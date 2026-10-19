@@ -25,6 +25,44 @@ func _frames(n: int) -> void:
 		await get_tree().physics_frame
 
 
+## Exit-stall helper: park a loose canister near one arena edge and
+## let a grabber latch it and haul it out that edge. Returns true
+## only if the canister goes GONE *and* the pirate is freed, all
+## inside the frame budget. (Regression: a leaver used to park on
+## its exit point, inside the despawn margin, forever.)
+func _drag_out_through(edge: int) -> bool:
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.player.global_position = Vector2(120.0, 120.0)
+	var loose_pos: Vector2 = Vector2(640.0, 210.0) # 0 = top
+	var spawn_pos: Vector2 = Vector2(640.0, 252.0)
+	match edge:
+		1: # bottom
+			loose_pos = Vector2(640.0, 590.0)
+			spawn_pos = Vector2(640.0, 548.0)
+		2: # left
+			loose_pos = Vector2(210.0, 400.0)
+			spawn_pos = Vector2(252.0, 400.0)
+		3: # right
+			loose_pos = Vector2(1070.0, 400.0)
+			spawn_pos = Vector2(1028.0, 400.0)
+	var can: Canister = game.canisters[0]
+	can.set_loose(Vector2.ZERO)
+	can.global_position = loose_pos
+	var p: Pirate = game.spawn_pirate("grabber", spawn_pos)
+	var gone: bool = false
+	var freed: bool = false
+	for i: int in range(900):
+		await _frames(1)
+		if can.state == Canister.State.GONE:
+			gone = true
+		if not is_instance_valid(p) or not game.pirates.has(p):
+			freed = true
+			break
+	return gone and freed
+
+
 func _ready() -> void:
 	var packed: PackedScene = load("res://scenes/main.tscn") as PackedScene
 	game = packed.instantiate() as Main
@@ -434,6 +472,111 @@ func _ready() -> void:
 			music_pitch_ok = false
 	_check("every music player keeps pitch_scale exactly 1.0",
 		music_pitch_ok and all_music.size() == 12)
+
+	# --- M3 fix: the exit stall (a leaver parked on its exit point,
+	# inside the despawn margin, and held the wave forever) ---------
+
+	# (32-35) A grabber drags a canister out through EACH edge: the
+	# canister resolves GONE and the pirate is freed, every time.
+	var out_top: bool = await _drag_out_through(0)
+	_check("drag-out top: canister GONE and pirate freed", out_top)
+	var out_bottom: bool = await _drag_out_through(1)
+	_check("drag-out bottom: canister GONE and pirate freed", out_bottom)
+	var out_left: bool = await _drag_out_through(2)
+	_check("drag-out left: canister GONE and pirate freed", out_left)
+	var out_right: bool = await _drag_out_through(3)
+	_check("drag-out right: canister GONE and pirate freed", out_right)
+
+	# (36) The no-canister exit: with nothing stealable, a grabber
+	# enters LEAVE — and the leave actually completes.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.player.global_position = Vector2(120.0, 680.0)
+	for c: Canister in game.canisters:
+		c.state = Canister.State.TOWED # unavailable as a target
+	var leaver: Pirate = game.spawn_pirate("grabber", Vector2(640.0, 100.0))
+	var saw_leave: bool = false
+	var leaver_freed: bool = false
+	for i: int in range(600):
+		await _frames(1)
+		if is_instance_valid(leaver) and leaver.phase == Pirate.Phase.LEAVE:
+			saw_leave = true
+		if not is_instance_valid(leaver) or not game.pirates.has(leaver):
+			leaver_freed = true
+			break
+	_check("with no target a grabber enters LEAVE", saw_leave)
+	_check("an empty leaver flies out and is freed", leaver_freed)
+
+	# (37) A gunner's end path: it never exits on its own — it holds
+	# its post until killed; a bullet kill is what frees it.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	var gun: Pirate = game.spawn_pirate("gunner",
+		Tuning.depot_center() + Vector2(300.0, 0.0))
+	game.player.global_position = Tuning.depot_center() \
+		+ Vector2(0.0, 195.0)
+	var holding: bool = false
+	for i: int in range(300):
+		await _frames(1)
+		if is_instance_valid(gun) and gun.phase == Pirate.Phase.HOLD:
+			holding = true
+			break
+	_check("gunner reaches its HOLD post", holding)
+	game.spawn_bullet(gun.global_position + Vector2(-30.0, 0.0),
+		Vector2.RIGHT)
+	var gun_down: bool = false
+	for i: int in range(30):
+		await _frames(1)
+		if not is_instance_valid(gun):
+			gun_down = true
+			break
+	_check("a HOLD gunner is freed by a bullet kill (its only exit)",
+		gun_down)
+
+	# (38) The exit watchdog: a leaver pinned where it can never
+	# cross the despawn boundary is left alone while young, then
+	# force-freed once it passes the Tuning limit.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.player.global_position = Vector2(120.0, 680.0)
+	for c: Canister in game.canisters:
+		c.state = Canister.State.TOWED
+	var stuck: Pirate = game.spawn_pirate("grabber", Vector2(640.0, 100.0))
+	var watchdog_frames: int = int(Tuning.EXIT_WATCHDOG_TIME * 60.0)
+	var still_at_300: bool = false
+	var stuck_freed: bool = false
+	for i: int in range(watchdog_frames + 240):
+		await _frames(1)
+		if not is_instance_valid(stuck) or not game.pirates.has(stuck):
+			stuck_freed = true
+			break
+		stuck.global_position = Vector2(640.0, 60.0) # pinned inside
+		if i == 300:
+			still_at_300 = game.pirates.has(stuck)
+	_check("watchdog does not free a young leaver", still_at_300)
+	_check("watchdog force-frees a permanently stuck leaver", stuck_freed)
+
+	# (39) Stall soak: three full waves behind a stand-in player
+	# (unkillable; it clears every pirate through Main's real kill
+	# path the moment it appears). Wave progression itself is what
+	# is on trial — stepped directly so the soak runs fast.
+	game.start_run() # director live for this one
+	game.player.invincible_t = 1000000000.0
+	var soak_frames: int = 0
+	while game.wave < 4 and soak_frames < 9000:
+		game._physics_process(1.0 / 60.0)
+		soak_frames += 1
+		var field_now: Array[Pirate] = game.pirates.duplicate()
+		for p: Pirate in field_now:
+			game.kill_pirate(p, false)
+	await _frames(3)
+	_check("soak: three full waves advance without a stall",
+		game.wave >= 4 and game.state == Main.GameState.RUNNING)
+	print("SOAK: reached wave %d in %d stepped frames"
+		% [game.wave, soak_frames])
 
 	print("HARNESS: %d/%d checks passed" % [_passed, _passed + _failed])
 	get_tree().quit(0 if _failed == 0 else 1)
