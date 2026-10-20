@@ -653,10 +653,14 @@ func _bullet_hit(b: Bullet) -> Pirate:
 
 ## Player bullets vs the Dreadnought: parts first, then the hull
 ## (the boss's hit_circles order). Every connecting bullet pays
-## TICK_POINTS through the multiplier and routes the hit_tick
+## tick points through the multiplier and routes the hit_tick
 ## confirm (throttled inside the sfx director) — sustained fire
-## on a capital is always paying. A dying boss takes no hits:
-## the spectacle is already running and bullets fly through.
+## on a capital is always paying. PROXIMITY BONUS: if the player
+## is within Tuning.BOSS_PROXIMITY_RADIUS of the boss's centre
+## at the moment of impact, the same hit deals double damage
+## and pays the boosted tick — the close, dangerous line is the
+## fast line. A dying boss takes no hits: the spectacle is
+## already running and bullets fly through.
 func _bullet_hit_boss(b: Bullet) -> bool:
 	for boss: Boss in bosses:
 		if boss.phase == Boss.Phase.DYING:
@@ -672,12 +676,15 @@ func _bullet_hit_boss(b: Bullet) -> bool:
 				var at: Vector2 = b.global_position
 				bullets.erase(b)
 				b.queue_free()
-				add_score(Tuning.BOSS_TICK_POINTS)
+				var close: bool = Tuning.boss_proximity_active(
+					player.global_position, boss.global_position)
+				add_score(Tuning.boss_tick_points(close))
 				sfx.play("hit_tick", at)
+				var amount: int = Tuning.boss_hit_damage(close)
 				if what == "hull":
-					boss.damage_hull()
+					boss.damage_hull(amount)
 				else:
-					boss.damage_part(what)
+					boss.damage_part(what, amount)
 				return true
 	return false
 
@@ -854,6 +861,8 @@ func _sync_hud() -> void:
 			live_boss = bb
 			break
 	hud.boss_bar_active = live_boss != null
+	hud.boss_bar_close_bonus = live_boss != null \
+		and live_boss.proximity_active
 	if live_boss != null:
 		hud.boss_bar_label = Tuning.BOSS_NAME
 		if live_boss.tier > 1:

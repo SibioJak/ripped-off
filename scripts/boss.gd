@@ -44,6 +44,7 @@ var phase: Phase = Phase.ENTRY
 var tier: int = 1
 var max_hull_hp: int = 1
 var hull_hp: int = 1
+var proximity_active: bool = false # player inside the bonus band
 
 # Test-visible counters (the harness reads these).
 var shots_left: int = 0
@@ -81,6 +82,7 @@ var _death_idx: int = 0
 var _death_sent: bool = false
 var _chunks: Array[Dictionary] = [] # torn-off part debris, drawn in DYING
 var _spark_t: float = 0.0
+var _proximity_pulse_t: float = 0.0
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
 
@@ -132,6 +134,11 @@ func is_part_broken(part_id: String) -> bool:
 	return bool(pd["broken"])
 
 
+func part_hp(part_id: String) -> int:
+	var pd: Dictionary = _parts[part_id] as Dictionary
+	return int(pd["hp"])
+
+
 func hull_frac() -> float:
 	return clampf(float(hull_hp) / float(maxi(max_hull_hp, 1)), 0.0, 1.0)
 
@@ -160,10 +167,10 @@ func _arm_mouth() -> Vector2:
 
 # --- Damage (called by Main when a bullet connects) -----------------------
 
-func damage_hull() -> void:
+func damage_hull(amount: int = 1) -> void:
 	if phase == Phase.DYING:
 		return
-	hull_hp -= 1
+	hull_hp = maxi(hull_hp - maxi(amount, 0), 0)
 	_hull_flash = 0.12
 	var frac: float = hull_frac()
 	if not _radial1_done and frac <= 0.66:
@@ -177,11 +184,11 @@ func damage_hull() -> void:
 	queue_redraw()
 
 
-func damage_part(part_id: String) -> void:
+func damage_part(part_id: String, amount: int = 1) -> void:
 	if phase == Phase.DYING or is_part_broken(part_id):
 		return
 	var pd: Dictionary = _parts[part_id] as Dictionary
-	var hp: int = int(pd["hp"]) - 1
+	var hp: int = maxi(int(pd["hp"]) - maxi(amount, 0), 0)
 	pd["hp"] = hp
 	pd["flash"] = 0.15
 	_parts[part_id] = pd
@@ -219,6 +226,10 @@ func _drop_arm_hold() -> void:
 
 func step(delta: float, canisters: Array[Canister], player_pos: Vector2,
 		player_alive: bool) -> void:
+	proximity_active = Tuning.boss_proximity_active(
+		player_pos, global_position)
+	if proximity_active:
+		_proximity_pulse_t += delta
 	_hull_flash = maxf(_hull_flash - delta, 0.0)
 	var ids: Array = _parts.keys()
 	for pid_v: Variant in ids:
@@ -547,6 +558,7 @@ func _draw() -> void:
 		return
 	var base: Color = Tuning.COLOR_BOSS
 	var dim: Color = base.darkened(0.45)
+	_draw_proximity_ring(base)
 	draw_polyline(_hull_pts(), base, 2.5, true)
 	# Inner deck echo + structure lines.
 	var inner: PackedVector2Array = PackedVector2Array([
@@ -577,6 +589,28 @@ func _draw() -> void:
 	_draw_part(PART_TURRET_R)
 	_draw_part(PART_ARM)
 	_draw_arm_telegraph()
+
+
+## The proximity bonus band, drawn under the hull as broken arc
+## segments (this game's linework does not do perfect circles).
+## Faint while the player is outside; inside, it brightens and
+## pulses — the standing, spatial half of the bonus feedback.
+## The ring is drawn in boss-local space, so it may run past the
+## arena's top wall and clip there, exactly as a range band should.
+func _draw_proximity_ring(base: Color) -> void:
+	var alpha: float = 0.10
+	var width: float = 1.5
+	if proximity_active:
+		alpha = 0.34 + 0.12 * sin(_proximity_pulse_t * 6.0)
+		width = 2.5
+	var col: Color = Color(base, alpha)
+	var segments: int = 28
+	var gap: float = 0.055 # radians of air at each segment joint
+	for i: int in range(segments):
+		var a0: float = TAU * float(i) / float(segments) + gap
+		var a1: float = TAU * float(i + 1) / float(segments) - gap
+		draw_arc(Vector2.ZERO, Tuning.BOSS_PROXIMITY_RADIUS,
+			a0, a1, 10, col, width, true)
 
 
 func _draw_part(part_id: String) -> void:

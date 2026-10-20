@@ -22,6 +22,7 @@ var banner_frac: float = 0.0 # 1 at banner start, fades to 0
 var boss_bar_active: bool = false # boss waves: hull bar at top center
 var boss_bar_label: String = ""
 var boss_bar_frac: float = 1.0 # hull fraction remaining, 0..1
+var boss_bar_close_bonus: bool = false # player inside the proximity band
 
 const MODE_TITLE: int = 0
 const MODE_RUNNING: int = 1
@@ -90,7 +91,10 @@ func _draw_run_hud() -> void:
 	# measured _text_center path, never an alignment box.
 	if boss_bar_active:
 		var bcx: float = Tuning.VIEW_W * 0.5
-		_text_center(Vector2(bcx, 66.0), boss_bar_label, 18,
+		var label: String = boss_bar_label
+		if boss_bar_close_bonus:
+			label += " — CLOSE BONUS"
+		_text_center(Vector2(bcx, 66.0), label, 18,
 			Tuning.COLOR_BOSS.lerp(Color.WHITE, 0.3))
 		var bw: float = 320.0
 		var bx: float = bcx - bw * 0.5

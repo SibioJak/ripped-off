@@ -224,6 +224,10 @@ const BOSS_PART_RANK_GAIN: float = 0.04
 const BOSS_KILL_RANK_GAIN: float = 0.15
 const BOSS_SHARD_FOUNTAIN: int = 25
 const BOSS_TICK_POINTS: int = 5 # per connecting bullet, x multiplier
+const BOSS_PROXIMITY_RADIUS: float = 300.0 # player-to-boss centre distance
+	# at which close-range boss hits earn the proximity bonus
+const BOSS_PROXIMITY_TICK_POINTS: int = 20 # close hit, before multiplier
+const BOSS_PROXIMITY_DAMAGE: int = 2 # close hit damage (far hits deal 1)
 const BOSS_ENTRY_TIME: float = 3.0 # descent from the top edge to station
 const BOSS_STATION_Y: float = 170.0 # the top band; the boss never leaves it
 const BOSS_STRAFE_AMP: float = 200.0
@@ -261,6 +265,20 @@ static func boss_radial_count(tier: int) -> int:
 static func boss_score_value(tier: int) -> int:
 	return int(round(float(BOSS_SCORE)
 		* (1.0 + BOSS_SCORE_TIER_STEP * float(tier - 1))))
+
+
+## The proximity rule, measured centre-to-centre at bullet impact.
+## The boundary itself is live: exactly the radius counts as close.
+static func boss_proximity_active(player_pos: Vector2, boss_pos: Vector2) -> bool:
+	return player_pos.distance_to(boss_pos) <= BOSS_PROXIMITY_RADIUS
+
+
+static func boss_tick_points(close: bool) -> int:
+	return BOSS_PROXIMITY_TICK_POINTS if close else BOSS_TICK_POINTS
+
+
+static func boss_hit_damage(close: bool) -> int:
+	return BOSS_PROXIMITY_DAMAGE if close else 1
 
 
 static func clamp_inside(pos: Vector2, radius: float) -> Vector2:
