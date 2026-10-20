@@ -89,6 +89,22 @@ const WAVE_MAX_ALIVE_CAP: int = 9
 const SPAWN_INTERVAL: float = 0.85
 const WAVE_BANNER_TIME: float = 1.5
 
+# --- Spawn flow (M8: dealt deck, separation, flow-paced refill) -------------
+## The wave's class mix is dealt from a deck with exact counts,
+## never rolled per spawn (dice clump; decks spread). The deck is
+## built under a run guard so no class deals more than this many
+## times in a row.
+const SPAWN_DECK_MAX_RUN: int = 3
+## A new spawn point must sit at least this far from the previous
+## one (the player exclusion still outranks it), so entries walk
+## around the walls instead of stacking on one edge.
+const SPAWN_MIN_SEPARATION: float = 220.0
+## Refill pacing: the spawn interval is multiplied by a flow
+## factor between this (empty field) and 1.0 (field at its alive
+## cap), so a wiped wave refills briskly but still one ship at a
+## time — flow, never burst.
+const SPAWN_FLOW_MIN_FRAC: float = 0.45
+
 # --- Rank (the intensity engine) -------------------------------------------------
 ## Rank lives 0..1 and is explicit: score-fed play raises it, rank
 ## raises the pressure back. It NEVER falls below a floor that rises
@@ -153,6 +169,14 @@ const CONVERT_QUOTA_DELAY: float = 0.5 # quota spent + no working thief
 const ENEMY_BULLET_SPEED: float = 340.0
 const ENEMY_BULLET_RADIUS: float = 4.0
 const ENEMY_BULLET_LIFE: float = 4.0
+## The hostile-fire pulse (M8): every enemy bullet breathes in
+## sync off one shared clock — core brightness and radius swell
+## and settle together — so hostile fire separates from steady
+## player bullets, shards and bursts at a glance. Player bullets
+## never pulse; that stillness is the other half of the read.
+const ENEMY_BULLET_PULSE_HZ: float = 2.4 # full breaths per second
+const ENEMY_BULLET_PULSE_DEPTH: float = 0.30 # core colour lerp toward white at peak
+const ENEMY_BULLET_PULSE_RADIUS_FRAC: float = 0.18 # core radius swings +/- this fraction
 
 # --- Powerups (M5: temp drops; ONE active at a time) ------------------------------
 ## Kills drop a pickup; flying over it replaces whatever powerup
@@ -252,6 +276,15 @@ static func rank_speed_mult(rank: float) -> float:
 ## Spawn interval at a given rank: shorter (more pressure) as rank rises.
 static func rank_spawn_interval(base: float, rank: float) -> float:
 	return base * lerpf(1.0, SPAWN_INTERVAL_MIN_FRAC, clampf(rank, 0.0, 1.0))
+
+
+## Refill flow factor: SPAWN_FLOW_MIN_FRAC on an empty field,
+## easing to 1.0 as the field fills to its alive cap. Multiplies
+## the spawn interval so the director deals briskly into a lull
+## and at full pace into a crowd (M8).
+static func spawn_flow_frac(alive_count: int, max_alive: int) -> float:
+	return lerpf(SPAWN_FLOW_MIN_FRAC, 1.0,
+		clampf(float(alive_count) / float(maxi(max_alive, 1)), 0.0, 1.0))
 
 
 ## Extra concurrent pirates the director allows at a given rank.
