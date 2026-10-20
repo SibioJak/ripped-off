@@ -290,7 +290,7 @@ func _ready() -> void:
 	var round_i: int = 0
 	while not saw_gunner and round_i < 3:
 		round_i += 1
-		game.director.start_wave(2) # quota 8, gunners enter the mix
+		game.director.start_wave(2) # quota 12 (M6 retune), gunners enter the mix
 		game.player.global_position = Tuning.depot_center() \
 			+ Vector2(0.0, 195.0)
 		var seen: int = 0

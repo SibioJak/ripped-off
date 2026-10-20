@@ -8,7 +8,7 @@ extends RefCounted
 
 const DEFS: Dictionary = {
 	"grabber": {
-		"speed": 125.0, # approach speed while hunting a canister
+		"speed": 140.0, # approach speed while hunting a canister
 		"drag_speed": 92.0, # escape speed while dragging one
 		"score": 100, # base kill points (before multiplier)
 		"shards": 4, # salvage shards burst on death
@@ -17,7 +17,7 @@ const DEFS: Dictionary = {
 		"role": "thief",
 	},
 	"gunner": {
-		"speed": 150.0, # entry speed while flying to its standoff point
+		"speed": 165.0, # entry speed while flying to its standoff point
 		"score": 150, # base kill points (before multiplier)
 		"shards": 4, # salvage shards burst on death
 		"radius": 13.0,

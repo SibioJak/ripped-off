@@ -76,11 +76,11 @@ const MULT_DECAY_RATE: float = 0.45 # multiplier points per second, floor is x1
 const MULT_DEATH_FACTOR: float = 0.5 # death halves the multiplier
 
 # --- Waves ----------------------------------------------------------------------
-const WAVE_BASE_QUOTA: int = 4 # wave quota = BASE + PER_WAVE * wave
-const WAVE_QUOTA_PER_WAVE: int = 2
-const WAVE_MAX_ALIVE_BASE: int = 3 # alive cap = BASE + wave - 1, capped
-const WAVE_MAX_ALIVE_CAP: int = 6
-const SPAWN_INTERVAL: float = 1.1
+const WAVE_BASE_QUOTA: int = 6 # wave quota = BASE + PER_WAVE * wave
+const WAVE_QUOTA_PER_WAVE: int = 3
+const WAVE_MAX_ALIVE_BASE: int = 4 # alive cap = BASE + wave - 1, capped
+const WAVE_MAX_ALIVE_CAP: int = 9
+const SPAWN_INTERVAL: float = 0.85
 const WAVE_BANNER_TIME: float = 1.5
 
 # --- Rank (the intensity engine) -------------------------------------------------
@@ -88,10 +88,10 @@ const WAVE_BANNER_TIME: float = 1.5
 ## raises the pressure back. It NEVER falls below a floor that rises
 ## slowly with the wave, so the game eases off after a disaster but
 ## never goes soft. All scaling goes through the helpers below.
-const RANK_START: float = 0.15 # a fresh run begins at low menace
+const RANK_START: float = 0.25 # a fresh run begins at real menace (M6)
 const RANK_FLOOR_BASE: float = 0.15 # floor at wave 1
-const RANK_FLOOR_PER_WAVE: float = 0.02 # floor growth per wave
-const RANK_FLOOR_CAP: float = 0.5 # the floor never rises past this
+const RANK_FLOOR_PER_WAVE: float = 0.035 # floor growth per wave
+const RANK_FLOOR_CAP: float = 0.6 # the floor never rises past this
 const RANK_GAIN_KILL: float = 0.02
 const RANK_GAIN_SHARD: float = 0.004
 const RANK_GAIN_BUZZ: float = 0.01
@@ -107,8 +107,8 @@ const GUNNER_FIRE_MIN_FRAC: float = 0.6 # gunner fire interval x this at rank 1
 # --- Gunners (first shooter class; numbers live in enemy_defs.gd) ------------------
 const GUNNER_CHARGE_TIME: float = 0.4 # muzzle glow wind-up before every shot
 const GUNNER_SHARE_MIN: float = 0.25 # gunner share of the quota from wave 2
-const GUNNER_SHARE_PER_WAVE: float = 0.03 # share grows with the wave
-const GUNNER_SHARE_CAP: float = 0.55
+const GUNNER_SHARE_PER_WAVE: float = 0.05 # share grows with the wave
+const GUNNER_SHARE_CAP: float = 0.60
 
 # --- Hunters (M6: the direct-challenge class; numbers live in enemy_defs.gd) --------
 ## The hunter never looks at a canister: it closes on the player,
