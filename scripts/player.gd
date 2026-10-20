@@ -170,30 +170,50 @@ func step(delta: float, allow_input: bool) -> void:
 		fire_cd = effective_fire_interval()
 		fired.emit(global_position + facing * (Tuning.PLAYER_RADIUS + 5.0), facing)
 
-	# Invincibility blink.
-	if invincible_t > 0.0:
-		visible = int(invincible_t * 14.0) % 2 == 0
-	else:
-		visible = true
+	# The invincibility blink lives in _draw (hull alpha), not in
+	# this node's visible flag: the hotspot must stay solid and
+	# readable while the hull ghosts. Alive means visible here —
+	# die() is what hides the node.
+	visible = true
 	queue_redraw()
 
 
 func _draw() -> void:
 	if not alive:
 		return
-	draw_set_transform(Vector2.ZERO, facing.angle(), Vector2.ONE)
-	var col: Color = Tuning.COLOR_PLAYER
+	# Hull art: authored around the old 13px body, scaled up to
+	# the current PLAYER_RADIUS — same silhouette, a tad bigger.
+	# The invincibility blink ghosts the HULL ONLY (alpha on the
+	# odd phase, the cadence the old visible-toggle used) so the
+	# hotspot drawn below never blinks.
+	var hull_col: Color = Tuning.COLOR_PLAYER
+	if invincible_t > 0.0 and int(invincible_t * 14.0) % 2 == 1:
+		hull_col.a = 0.25
+	var art_scale: float = Tuning.PLAYER_RADIUS / 13.0
+	draw_set_transform(Vector2.ZERO, facing.angle(),
+		Vector2.ONE * art_scale)
 	var pts: PackedVector2Array = PackedVector2Array([
 		Vector2(18.0, 0.0), Vector2(-12.0, 10.0),
 		Vector2(-7.0, 0.0), Vector2(-12.0, -10.0), Vector2(18.0, 0.0)])
-	draw_polyline(pts, col, 2.0, true)
-	var core: Color = col.lerp(Color.WHITE, 0.6)
-	draw_line(Vector2(10.0, 0.0), Vector2(-5.0, 0.0), core, 2.0, true)
+	draw_polyline(pts, hull_col, 2.0 / art_scale, true)
+	var core: Color = Tuning.COLOR_PLAYER.lerp(Color.WHITE, 0.6)
+	core.a = hull_col.a
+	draw_line(Vector2(10.0, 0.0), Vector2(-5.0, 0.0), core,
+		2.0 / art_scale, true)
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	# The shield, drawn unrotated around the ship while it is up:
-	# a breathing ring in the shield's own blue.
+	# a breathing ring in the shield's own blue, riding the body
+	# radius so it grows with the hull.
 	if powerup_id == "shield":
 		var pulse: float = 0.6 + 0.3 * sin(
 			float(Time.get_ticks_msec()) * 0.006)
-		draw_arc(Vector2.ZERO, 21.0, 0.0, TAU, 40,
+		draw_arc(Vector2.ZERO, Tuning.PLAYER_RADIUS + 4.0, 0.0, TAU, 40,
 			Color(Tuning.COLOR_POWERUP_SHIELD, pulse), 2.0, true)
+	# THE HOTSPOT, drawn last and unrotated, on top of everything:
+	# a hot near-white core with a thin ring of the ship's colour
+	# at exactly the radius enemy bullets judge. Its size IS the
+	# constant — art and collision cannot drift apart.
+	draw_circle(Vector2.ZERO, Tuning.PLAYER_HOTSPOT_RADIUS,
+		Color(1.0, 0.99, 0.94, 1.0))
+	draw_arc(Vector2.ZERO, Tuning.PLAYER_HOTSPOT_RADIUS, 0.0, TAU, 24,
+		Tuning.COLOR_PLAYER, 1.5, true)

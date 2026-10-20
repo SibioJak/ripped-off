@@ -42,7 +42,13 @@ const RECOVERY_DIST_FAR: float = 560.0 # tow-start distance mapping to RECOVERY_
 # --- Player -----------------------------------------------------------
 const PLAYER_SPEED: float = 350.0
 const PLAYER_ACCEL: float = 3200.0 # high on purpose: direct twin-stick, no drift
-const PLAYER_RADIUS: float = 13.0
+const PLAYER_RADIUS: float = 17.0 # BODY radius: ship contact, the arena
+# clamp margin and the muzzle offset all judge the full hull.
+# Enemy bullets do NOT — they judge the hotspot below (danmaku
+# split: a bigger ship you can still thread through dense fire).
+const PLAYER_HOTSPOT_RADIUS: float = 5.0 # the ship's vulnerable core:
+# the ONLY radius enemy bullets test against (kill distance =
+# ENEMY_BULLET_RADIUS + this), drawn on the hull at this size.
 const PLAYER_FIRE_INTERVAL: float = 0.15
 const PLAYER_RESPAWN_TIME: float = 1.2
 const PLAYER_INVINCIBLE_TIME: float = 2.0
@@ -156,7 +162,15 @@ const COLOR_POWERUP_OVERTHRUST: Color = Color(0.35, 1.0, 0.4, 1.0) # green arrow
 const COLOR_POWERUP_SHIELD: Color = Color(0.35, 0.6, 1.0, 1.0) # blue hex
 
 # --- Buzz (grazing) -------------------------------------------------------------------
-const BUZZ_RADIUS: float = 46.0 # a near-miss inside this ring pays out
+const BUZZ_RADIUS: float = 30.0 # bullet graze: a near-miss inside this
+# ring (centre distance) pays out — tightened around the bigger
+# hull in the danmaku split, so buzz pays for a genuine shave.
+const BUZZ_PASS_MARGIN: float = 16.0 # drag-pass buzz window: a pirate
+# mid-drag pays when it passes within contact range + this margin
+# without touching. For a standard pirate the window is
+# (17 + 13, 17 + 13 + 16] = (30, 46] — the outer edge sits exactly
+# where the old shared buzz ring put it; only the inner edge
+# moved out with the bigger hull.
 const BUZZ_POINTS: int = 25
 const BUZZ_MULT_NUDGE: float = 0.1
 

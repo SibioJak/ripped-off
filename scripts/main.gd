@@ -700,7 +700,10 @@ func _physics_process(delta: float) -> void:
 
 
 ## Enemy bullets fly, hit (a hit is a death, via the M1 flow) and
-## graze. A graze inside BUZZ_RADIUS that does not hit pays buzz —
+## graze. The hit test judges the ship's HOTSPOT, not its hull
+## (the danmaku split): a bullet only kills inside
+## ENEMY_BULLET_RADIUS + PLAYER_HOTSPOT_RADIUS of the centre.
+## A graze inside BUZZ_RADIUS that does not hit pays buzz —
 ## once per bullet, however long it stays in the ring.
 func _step_enemy_bullets(delta: float) -> void:
 	var now: Array[EnemyBullet] = enemy_bullets.duplicate()
@@ -716,7 +719,8 @@ func _step_enemy_bullets(delta: float) -> void:
 			continue
 		var d: float = eb.global_position.distance_to(player.global_position)
 		if not player.is_invincible() \
-				and d <= Tuning.ENEMY_BULLET_RADIUS + Tuning.PLAYER_RADIUS:
+				and d <= Tuning.ENEMY_BULLET_RADIUS \
+					+ Tuning.PLAYER_HOTSPOT_RADIUS:
 			enemy_bullets.erase(eb)
 			eb.queue_free()
 			kill_player() # converts every other live bullet to shards
@@ -726,18 +730,21 @@ func _step_enemy_bullets(delta: float) -> void:
 
 
 ## The other buzz: a close pass on a pirate mid-drag, without
-## contact. Once per pirate per drag — the flag resets on latch.
+## contact. The window is relative to the contact range (body +
+## pirate radius): closer than contact + BUZZ_PASS_MARGIN but
+## not touching. Once per pirate per drag — the flag resets on
+## latch.
 func _resolve_buzz_passes() -> void:
 	if not player.alive:
 		return
-	var contact_range: float = Tuning.PLAYER_RADIUS # plus each pirate's radius
 	var now: Array[Pirate] = pirates.duplicate()
 	for p: Pirate in now:
 		if p.phase != Pirate.Phase.DRAG or p.held == null \
 				or p.buzzed_this_drag:
 			continue
 		var d: float = p.global_position.distance_to(player.global_position)
-		if d <= Tuning.BUZZ_RADIUS and d > contact_range + p.radius:
+		var contact_sum: float = Tuning.PLAYER_RADIUS + p.radius
+		if d > contact_sum and d <= contact_sum + Tuning.BUZZ_PASS_MARGIN:
 			p.buzzed_this_drag = true
 			_award_buzz(p.global_position)
 
