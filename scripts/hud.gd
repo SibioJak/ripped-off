@@ -23,6 +23,10 @@ var boss_bar_active: bool = false # boss waves: hull bar at top center
 var boss_bar_label: String = ""
 var boss_bar_frac: float = 1.0 # hull fraction remaining, 0..1
 var boss_bar_close_bonus: bool = false # player inside the proximity band
+var powerup_id: String = "" # active powerup ("" = none): HUD chip
+var powerup_name: String = ""
+var powerup_color: Color = Color.WHITE
+var powerup_frac: float = 0.0 # remaining timer fraction, 0..1
 
 const MODE_TITLE: int = 0
 const MODE_RUNNING: int = 1
@@ -78,6 +82,19 @@ func _draw_run_hud() -> void:
 		Tuning.COLOR_STEAL_FLASH.lerp(Tuning.COLOR_SHARD, 1.0 - rank))
 	var floor_x: float = rx + 62.0 + rank_w * clampf(rank_floor, 0.0, 1.0)
 	draw_rect(Rect2(floor_x - 1.0, 17.0, 2.0, 14.0), Tuning.COLOR_TEXT)
+	# Powerup chip (M5): the shared glyph, the name, and a
+	# remaining-time bar — between the RANK bar and the wave
+	# readout, clear of the boss bar's centred label.
+	if powerup_id != "":
+		var chip_x: float = 800.0
+		PowerupDefs.draw_glyph(self, powerup_id,
+			Vector2(chip_x + 10.0, 25.0), 0.85)
+		_text(Vector2(chip_x + 26.0, 32.0), powerup_name, 18,
+			powerup_color)
+		draw_rect(Rect2(chip_x + 26.0, 38.0, 96.0, 4.0),
+			Color(Tuning.COLOR_TEXT_DIM, 0.35))
+		draw_rect(Rect2(chip_x + 26.0, 38.0,
+			96.0 * clampf(powerup_frac, 0.0, 1.0), 4.0), powerup_color)
 	_text(Vector2(1030.0, 32.0), "WAVE %d" % wave, 22, Tuning.COLOR_TEXT)
 	# Canister pips.
 	for i: int in range(Tuning.SLOT_COUNT):
@@ -136,6 +153,21 @@ func _draw_title() -> void:
 			col = Tuning.COLOR_SHARD
 		_text_center(Vector2(cx, y), line, 21, col)
 		y += 30.0
+	# Powerup legend (M5): the four glyphs with their names, drawn
+	# with the SAME PowerupDefs implementation the field pickups
+	# and the HUD chip use — learn the symbols here, read them
+	# at speed in the run.
+	_text_center(Vector2(cx, y + 6.0), "POWERUPS — KILLS DROP THEM",
+		16, Tuning.COLOR_TEXT_DIM)
+	var ids: Array[String] = PowerupDefs.type_ids()
+	var cell_w: float = 170.0
+	var first_cx: float = cx - cell_w * float(ids.size() - 1) * 0.5
+	for i: int in range(ids.size()):
+		var cell_cx: float = first_cx + cell_w * float(i)
+		PowerupDefs.draw_glyph(self, ids[i],
+			Vector2(cell_cx, y + 34.0), 0.9)
+		_text_center(Vector2(cell_cx, y + 62.0),
+			PowerupDefs.name_of(ids[i]), 15, PowerupDefs.color_of(ids[i]))
 
 
 func _draw_gameover() -> void:

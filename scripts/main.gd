@@ -35,6 +35,7 @@ var boss_wave: bool = false # wave % 5 == 0: one Dreadnought, no quota
 var bullets: Array[Bullet] = []
 var enemy_bullets: Array[EnemyBullet] = []
 var shards: Array[Shard] = []
+var pickups: Array[Powerup] = []
 var director: SpawnDirector = null
 var fx: LightFx = null
 var hud: Hud = null
@@ -49,6 +50,10 @@ var _popups: Array[Dictionary] = [] # floating text {pos, t, dur, text, color}
 var _banner_t: float = 0.0
 var _font: Font = null
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
+# Powerup drops roll on their OWN generator, seeded per run (the
+# music director's pattern): runs deal different drop sequences,
+# and the harness can pin the seed for a deterministic one.
+var _drop_rng: RandomNumberGenerator = RandomNumberGenerator.new()
 
 
 # --- Setup ---------------------------------------------------------------
@@ -131,6 +136,7 @@ func start_run() -> void:
 	fx.clear()
 	_run_count += 1
 	music.begin_run(20261018 + _run_count * 7919)
+	_drop_rng.seed = 20261018 + _run_count * 104729
 	sfx.play("ui_start", player.global_position)
 	director.start_wave(wave)
 	_show_banner("WAVE 1")
@@ -211,6 +217,9 @@ func clear_field() -> void:
 	for s: Shard in shards:
 		s.queue_free()
 	shards.clear()
+	for pk: Powerup in pickups:
+		pk.queue_free()
+	pickups.clear()
 	_debris.clear()
 	_popups.clear()
 
@@ -276,6 +285,9 @@ func _on_boss_death_completed(b: Boss) -> void:
 		bosses.erase(b)
 	var paid: int = add_score(Tuning.boss_score_value(b.tier))
 	_add_rank(Tuning.BOSS_KILL_RANK_GAIN)
+	# The guaranteed drop: a boss kill ALWAYS leaves a powerup,
+	# exempt from the one-on-field cap on random drops.
+	spawn_powerup_drop(b.global_position, roll_powerup_type())
 	_spawn_shards(b.global_position, Tuning.BOSS_SHARD_FOUNTAIN)
 	_spawn_debris(b.global_position, Tuning.COLOR_BOSS, 12)
 	spawn_popup(b.global_position, "DREADNOUGHT DOWN +%d" % paid,
@@ -317,7 +329,14 @@ func spawn_enemy_bullet_tinted(from: Vector2, dir: Vector2,
 
 
 func _on_player_fired(from: Vector2, dir: Vector2) -> void:
-	spawn_bullet(from, dir)
+	if player.has_powerup("spread"):
+		# Spread: the one fired signal fans out into 3 bullets —
+		# centre and facing rotated by the Tuning angle each way.
+		spawn_bullet(from, dir.rotated(-Tuning.POWERUP_SPREAD_ANGLE))
+		spawn_bullet(from, dir)
+		spawn_bullet(from, dir.rotated(Tuning.POWERUP_SPREAD_ANGLE))
+	else:
+		spawn_bullet(from, dir)
 	sfx.play("shot", from) # throttled inside the sfx director
 
 
@@ -434,11 +453,21 @@ func kill_pirate(p: Pirate, award: bool) -> void:
 	if award:
 		add_score(p.score_value())
 		_add_rank(Tuning.RANK_GAIN_KILL)
+	_maybe_roll_powerup_drop(p.global_position)
 	p.queue_free()
 
 
 func kill_player() -> void:
 	if not player.alive or player.is_invincible():
+		return
+	# SHIELD: an active shield eats the hit BEFORE any death cost
+	# lands — no multiplier slash, no rank bleed, no bullet-cancel,
+	# no tow drop. Both kill paths (enemy bullet, contact) run
+	# through here, so both are covered by this one hook.
+	if player.try_consume_shield():
+		fx.burst(player.global_position, Tuning.COLOR_POWERUP_SHIELD,
+			LightFx.Size.SMALL)
+		sfx.play("tow_latch", player.global_position)
 		return
 	fx.burst(player.global_position, Tuning.COLOR_PLAYER,
 		LightFx.Size.PLAYER_DEATH)
@@ -450,6 +479,58 @@ func kill_player() -> void:
 	multiplier = maxf(1.0, multiplier * Tuning.MULT_DEATH_FACTOR)
 	_add_rank(-Tuning.RANK_BLEED_DEATH)
 	player.respawn_t = Tuning.PLAYER_RESPAWN_TIME
+
+
+# --- Powerup drops (M5) ---------------------------------------------------------
+
+## Pin the drop sequence (the harness's determinism lever; live
+## runs reseed per run in start_run).
+func reseed_drop_rng(p_seed: int) -> void:
+	_drop_rng.seed = p_seed
+
+
+## Uniform roll over the four powerup types, from the drop RNG.
+func roll_powerup_type() -> String:
+	var ids: Array[String] = PowerupDefs.type_ids()
+	return ids[_drop_rng.randi_range(0, ids.size() - 1)]
+
+
+## Put a drop on the field at `at`, drifting slowly off the point.
+func spawn_powerup_drop(at: Vector2, type_id: String) -> Powerup:
+	var pk: Powerup = Powerup.new()
+	add_child(pk)
+	var drift: Vector2 = Vector2.from_angle(_drop_rng.randf() * TAU) \
+		* _drop_rng.randf_range(Tuning.POWERUP_DRIFT_MIN,
+			Tuning.POWERUP_DRIFT_MAX)
+	pk.setup(at, type_id, drift)
+	pickups.append(pk)
+	return pk
+
+
+## The random drop on a pirate kill: 12%, and ONLY while no
+## uncollected pickup sits on the field — one at a time, so a
+## drop is an event, not litter. (The boss guarantee above is
+## exempt; it calls spawn_powerup_drop directly.)
+func _maybe_roll_powerup_drop(at: Vector2) -> void:
+	if not pickups.is_empty():
+		return
+	if _drop_rng.randf() < Tuning.POWERUP_DROP_CHANCE:
+		spawn_powerup_drop(at, roll_powerup_type())
+
+
+## Collection: the pickup REPLACES whatever powerup is running
+## (fresh full timer, in the Player's own state), announced by a
+## popup naming it, a light burst in its colour, and the pickup
+## note — recovery_small lifted a pitch-step so it reads as
+## "module gained", not as a small canister deposit.
+func collect_powerup(pk: Powerup) -> void:
+	var at: Vector2 = pk.global_position
+	var type_id: String = pk.type_id
+	player.activate_powerup(type_id)
+	var col: Color = PowerupDefs.color_of(type_id)
+	spawn_popup(at, PowerupDefs.name_of(type_id), col)
+	fx.burst(at, col, LightFx.Size.SPARK)
+	sfx.play("recovery_small", at, 1.3)
 
 
 ## Every live enemy bullet converts into a salvage shard where it
@@ -586,6 +667,19 @@ func _physics_process(delta: float) -> void:
 			shards.erase(s)
 			s.queue_free()
 			collect_shard()
+
+	# Powerup drops drift and expire; flying over one collects it.
+	var pickups_now: Array[Powerup] = pickups.duplicate()
+	for pk: Powerup in pickups_now:
+		pk.step(delta)
+		if pk.expired():
+			pickups.erase(pk)
+			pk.queue_free()
+		elif player.alive and pk.global_position.distance_to(
+				player.global_position) <= Tuning.POWERUP_PICKUP_RADIUS:
+			pickups.erase(pk)
+			collect_powerup(pk)
+			pk.queue_free()
 
 	# Wave and run endings.
 	if canisters_remaining() <= 0:
@@ -871,6 +965,15 @@ func _sync_hud() -> void:
 		for bb: Boss in bosses:
 			live_boss = bb
 			break
+	# Powerup chip: the active powerup's id, name, colour and
+	# remaining-timer fraction, fed from the Player's state.
+	hud.powerup_id = player.powerup_id
+	if player.powerup_id != "":
+		hud.powerup_name = PowerupDefs.name_of(player.powerup_id)
+		hud.powerup_color = PowerupDefs.color_of(player.powerup_id)
+		hud.powerup_frac = player.powerup_fraction()
+	else:
+		hud.powerup_frac = 0.0
 	hud.boss_bar_active = live_boss != null
 	hud.boss_bar_close_bonus = live_boss != null \
 		and live_boss.proximity_active

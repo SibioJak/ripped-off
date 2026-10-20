@@ -115,6 +115,29 @@ const ENEMY_BULLET_SPEED: float = 340.0
 const ENEMY_BULLET_RADIUS: float = 4.0
 const ENEMY_BULLET_LIFE: float = 4.0
 
+# --- Powerups (M5: temp drops; ONE active at a time) ------------------------------
+## Kills drop a pickup; flying over it replaces whatever powerup
+## is running with a fresh full timer. Death clears it. The set
+## is data in powerup_defs.gd; every number lives here.
+const POWERUP_DROP_CHANCE: float = 0.12 # per pirate kill, field clear
+const POWERUP_LIFETIME: float = 9.0 # seconds a drop sits before despawning
+const POWERUP_BLINK_TIME: float = 2.0 # blink-out warning over the final stretch
+const POWERUP_PICKUP_RADIUS: float = 26.0 # player centre to pickup centre
+const POWERUP_DRIFT_MIN: float = 15.0 # drop drift speed off the kill point
+const POWERUP_DRIFT_MAX: float = 45.0
+const POWERUP_RAPID_DURATION: float = 10.0
+const POWERUP_SPREAD_DURATION: float = 10.0
+const POWERUP_OVERTHRUST_DURATION: float = 8.0
+const POWERUP_SHIELD_DURATION: float = 8.0
+const POWERUP_RAPID_FIRE_SCALE: float = 0.5 # fire interval x this (rapid)
+const POWERUP_SPREAD_ANGLE: float = 0.15 # rad: outer bullets off facing (spread)
+const POWERUP_OVERTHRUST_SPEED_SCALE: float = 1.35 # top speed x this
+const POWERUP_SHIELD_INVINCIBLE_TIME: float = 1.0 # grace after a shield eats a hit
+const COLOR_POWERUP_RAPID: Color = Color(1.0, 0.55, 0.1, 1.0) # orange bolt
+const COLOR_POWERUP_SPREAD: Color = Color(0.2, 0.95, 1.0, 1.0) # cyan fan
+const COLOR_POWERUP_OVERTHRUST: Color = Color(0.35, 1.0, 0.4, 1.0) # green arrow
+const COLOR_POWERUP_SHIELD: Color = Color(0.35, 0.6, 1.0, 1.0) # blue hex
+
 # --- Buzz (grazing) -------------------------------------------------------------------
 const BUZZ_RADIUS: float = 46.0 # a near-miss inside this ring pays out
 const BUZZ_POINTS: int = 25
