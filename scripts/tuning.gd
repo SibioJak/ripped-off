@@ -133,6 +133,22 @@ const HUNTER_ALIVE_CAP: int = 2 # concurrent hunters on the field, waves 3-6
 const HUNTER_ALIVE_CAP_LATE: int = 3 # ... from HUNTER_ALIVE_CAP_LATE_WAVE
 const HUNTER_ALIVE_CAP_LATE_WAVE: int = 7
 
+# --- Conversion (M7: the shooter becomes a thief) -----------------------------------
+## When no getter is working, a gunner stops shooting and RESHAPES
+## — transformer-style, plates folding, claw unfolding, colour
+## cross-fading to the grabber's coral — then dives for a canister
+## as a thief. The reshape is the fairness telegraph: a getter is
+## always manufactured in plain sight before one exists. Main owns
+## the triggers; the pirate owns the timeline.
+const CONVERT_TIME: float = 0.9 # the full reshape, staged in thirds
+const CONVERT_DEAD_AIR_TIME: float = 2.5 # no working thief (after one
+	# has existed this wave) for this long -> the oldest gunner converts
+const CONVERT_NO_STEAL_BACKSTOP: float = 8.0 # no canister dragged for
+	# this long -> a gunner converts even if a thief is out failing
+const CONVERT_COOLDOWN: float = 4.0 # minimum seconds between conversion starts
+const CONVERT_QUOTA_DELAY: float = 0.5 # quota spent + no working thief
+	# for this long -> a gunner converts (covers a getter-free wave)
+
 # --- Enemy bullets ------------------------------------------------------------------
 const ENEMY_BULLET_SPEED: float = 340.0
 const ENEMY_BULLET_RADIUS: float = 4.0

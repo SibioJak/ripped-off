@@ -45,6 +45,15 @@ var sfx: SfxDirector = null
 var _run_count: int = 0 # seeds the music variant rotation per run
 var _boss_pending: bool = false # warning banner playing; boss spawns at its end
 
+# Conversion watcher state (M7) — see _step_conversion. All of it
+# is per-wave: reset on every wave start, so no trigger state
+# leaks across a wave boundary.
+var _convert_cooldown_t: float = 0.0 # ticks down from a conversion start
+var _convert_dead_air_t: float = 0.0 # no working thief, after one existed
+var _convert_no_progress_t: float = 0.0 # nobody dragging anything
+var _convert_quota_state_t: float = 0.0 # quota spent + no working thief
+var _wave_had_thief: bool = false # a getter has worked this wave
+
 var _debris: Array[Dictionary] = [] # shrapnel lines {pos, vel, t, dur, color}
 var _popups: Array[Dictionary] = [] # floating text {pos, t, dur, text, color}
 var _banner_t: float = 0.0
@@ -131,6 +140,7 @@ func start_run() -> void:
 	wave = 1
 	boss_wave = false
 	_boss_pending = false
+	_reset_conversion_state()
 	paused = false
 	state = GameState.RUNNING
 	fx.clear()
@@ -160,12 +170,25 @@ func _game_over() -> void:
 
 func _start_next_wave() -> void:
 	wave += 1
+	_reset_conversion_state()
 	if wave % 5 == 0:
 		_begin_boss_wave()
 	else:
 		director.start_wave(wave)
 		sfx.play("wave_start", Tuning.depot_center())
 		_show_banner("WAVE %d" % wave)
+
+
+## Every conversion trigger clock starts clean each wave: the
+## cooldown is ready, no dead air or stall has accumulated, and
+## no getter has worked yet — conversion replaces a wave's lost
+## getters, it never pre-empts its first one.
+func _reset_conversion_state() -> void:
+	_convert_cooldown_t = 0.0
+	_convert_dead_air_t = 0.0
+	_convert_no_progress_t = 0.0
+	_convert_quota_state_t = 0.0
+	_wave_had_thief = false
 
 
 ## A boss wave: the director's pirate quota is replaced by the
@@ -235,6 +258,7 @@ func spawn_pirate(type_name: String, pos: Vector2) -> Pirate:
 	add_child(p)
 	p.setup(type_name, pos)
 	p.fired.connect(_on_pirate_fired)
+	p.convert_stage.connect(_on_pirate_convert_stage.bind(p))
 	pirates.append(p)
 	return p
 
@@ -533,6 +557,95 @@ func collect_powerup(pk: Powerup) -> void:
 	sfx.play("recovery_small", at, 1.3)
 
 
+## Reshape beats (M7): a spark burst at the pirate on every
+## stage, and the mechanical clunk when the claw locks in at
+## completion — the same one-shot the tow latch uses.
+func _on_pirate_convert_stage(stage: int, p: Pirate) -> void:
+	if not is_instance_valid(p):
+		return
+	fx.burst(p.global_position, p.draw_color, LightFx.Size.SPARK)
+	if stage == 3:
+		sfx.play("tow_latch", p.global_position)
+
+
+## The conversion watcher (M7). Conversion replaces lost getters:
+## a "working thief" is any pirate whose CURRENT role is thief in
+## TELEGRAPH, SEEK or DRAG — a natural grabber, or a convert that
+## finished its reshape. While one works, no conversion starts.
+## Three triggers, any one sufficient, all gated by the cooldown
+## and by nobody already reshaping (one at a time):
+##   (a) the quota is spent and no getter works, sustained for
+##       CONVERT_QUOTA_DELAY — a getter-free wave still converts
+##       (this one needs no thief to have existed; it is how a
+##       mop-up field manufactures its own pressure);
+##   (b) dead air: a getter worked this wave, none works now,
+##       sustained for CONVERT_DEAD_AIR_TIME;
+##   (c) the backstop: nothing has been dragged for
+##       CONVERT_NO_STEAL_BACKSTOP — fires even while a thief is
+##       out SEEKING and failing to latch; that failure is its
+##       whole purpose.
+## The convert is the longest-alive eligible gunner (current role
+## "shooter" in SEEK or HOLD — SEEK is its entry flight, HOLD is
+## its working post; both are its operational states). Hunters
+## are never eligible: their job is the player, and it does not
+## change. Boss waves field no pirates, so there is nothing to do.
+func _step_conversion(delta: float) -> void:
+	_convert_cooldown_t = maxf(_convert_cooldown_t - delta, 0.0)
+	var working_thief: bool = false
+	var any_converting: bool = false
+	var any_in_drag: bool = false
+	for p: Pirate in pirates:
+		if p.phase == Pirate.Phase.DRAG:
+			any_in_drag = true
+		if p.is_converting():
+			any_converting = true
+		if p.current_role() == "thief" and (
+				p.phase == Pirate.Phase.TELEGRAPH
+				or p.phase == Pirate.Phase.SEEK
+				or p.phase == Pirate.Phase.DRAG):
+			working_thief = true
+	if working_thief:
+		_wave_had_thief = true
+	# (b) Dead air: only counts while a field exists to convert.
+	if not pirates.is_empty() and not working_thief and _wave_had_thief:
+		_convert_dead_air_t += delta
+	else:
+		_convert_dead_air_t = 0.0
+	# (c) Steal progress is a canister DRAGGING or a pirate in
+	# DRAG; anything else lets the backstop clock run.
+	if _any_dragging() or any_in_drag:
+		_convert_no_progress_t = 0.0
+	else:
+		_convert_no_progress_t += delta
+	# (a) The quota-spent state, sustained.
+	if director.quota_exhausted() and not working_thief:
+		_convert_quota_state_t += delta
+	else:
+		_convert_quota_state_t = 0.0
+
+	if _convert_cooldown_t > 0.0 or any_converting:
+		return
+	var triggered: bool = false
+	if _convert_quota_state_t >= Tuning.CONVERT_QUOTA_DELAY:
+		triggered = true
+	if _convert_dead_air_t >= Tuning.CONVERT_DEAD_AIR_TIME:
+		triggered = true
+	if _convert_no_progress_t >= Tuning.CONVERT_NO_STEAL_BACKSTOP:
+		triggered = true
+	if not triggered:
+		return
+	var oldest: Pirate = null
+	for p: Pirate in pirates:
+		if p.current_role() == "shooter" and (
+				p.phase == Pirate.Phase.SEEK
+				or p.phase == Pirate.Phase.HOLD):
+			if oldest == null or p.alive_time() > oldest.alive_time():
+				oldest = p
+	if oldest != null:
+		oldest.begin_conversion()
+		_convert_cooldown_t = Tuning.CONVERT_COOLDOWN
+
+
 ## Every live enemy bullet converts into a salvage shard where it
 ## flies. Death costs the multiplier, never the whole field state.
 func _cancel_enemy_bullets() -> void:
@@ -623,6 +736,7 @@ func _physics_process(delta: float) -> void:
 		p.fire_interval_scale = Tuning.rank_fire_mult(rank)
 		p.step(delta, canisters)
 	_resolve_steals_and_leavers()
+	_step_conversion(delta)
 
 	# The Dreadnought (boss waves), stepped with the same context
 	# the pirates get: the canister field, the player, its state.

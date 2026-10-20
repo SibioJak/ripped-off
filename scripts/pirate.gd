@@ -9,13 +9,17 @@ extends Node2D
 ## one announced by a visible muzzle charge-up; a "hunter" (M6)
 ## never looks at a canister at all — it pursues the player,
 ## strafes around them at orbit range and fires lead shots, and
-## like the shooter it holds its hunt until killed. 1 HP: Main
-## resolves bullet and ram kills; this script never dies on its
-## own.
+## like the shooter it holds its hunt until killed. A shooter can
+## also enter CONVERT (M7): when no getter is working, Main orders
+## it to reshape — plates fold, a latch claw unfolds, the colour
+## cross-fades to the grabber's coral — and it comes out of the
+## reshape a thief in the same gunner hull. 1 HP: Main resolves
+## bullet and ram kills; this script never dies on its own.
 
 signal fired(from: Vector2, dir: Vector2)
+signal convert_stage(stage: int)
 
-enum Phase { TELEGRAPH, SEEK, DRAG, LEAVE, HOLD }
+enum Phase { TELEGRAPH, SEEK, DRAG, LEAVE, HOLD, CONVERT }
 
 var phase: Phase = Phase.TELEGRAPH
 var type_name: String = "grabber"
@@ -63,6 +67,20 @@ var _charging: bool = false
 var _charge_t: float = 0.0
 var _charge_time: float = Tuning.GUNNER_CHARGE_TIME # per role, set in setup
 
+# Conversion state (M7). The clock runs only in Phase.CONVERT;
+# _convert_from_color is the gunner's colour at the start of the
+# reshape and _grabber_color (cached in setup from the grabber
+# def) is where the cross-fade lands — at completion draw_color
+# IS the grabber colour, exactly. _alive_t is this pirate's age
+# in stepped seconds: Main's oldest-first conversion pick reads
+# it. Stage signals fire once each, in order: 1 and 2 at the
+# third boundaries, 3 at completion.
+var _alive_t: float = 0.0
+var _convert_t: float = 0.0
+var _convert_stage_emitted: int = 0
+var _convert_from_color: Color = Color(0.66, 0.42, 1.0, 1.0)
+var _grabber_color: Color = Color(1.0, 0.38, 0.3, 1.0)
+
 
 func _ready() -> void:
 	z_index = 5
@@ -86,6 +104,12 @@ func setup(p_type: String, spawn_pos: Vector2) -> void:
 	var c: Variant = def.get("color", Color(1.0, 0.38, 0.3, 1.0))
 	if typeof(c) == TYPE_COLOR:
 		draw_color = c as Color
+	# The conversion cross-fade's destination: the grabber def's
+	# colour, cached once (a convert must end up EXACTLY coral).
+	var grabber_def: Dictionary = EnemyDefs.get_def("grabber")
+	var gc: Variant = grabber_def.get("color", Color(1.0, 0.38, 0.3, 1.0))
+	if typeof(gc) == TYPE_COLOR:
+		_grabber_color = gc as Color
 	global_position = spawn_pos
 	_facing = (Tuning.depot_center() - spawn_pos).normalized()
 	_telegraph_t = Tuning.TELEGRAPH_TIME
@@ -112,8 +136,46 @@ func shard_count() -> int:
 	return int(def.get("shards", 4))
 
 
+## The role the pirate is CURRENTLY working — the def's role
+## until a conversion completes, "thief" from that moment on.
+## Main's conversion watcher and the draw marks read this, never
+## the def, so a converted gunner counts as the getter it became.
+func current_role() -> String:
+	return _role
+
+
+func is_converting() -> bool:
+	return phase == Phase.CONVERT
+
+
+## Stepped seconds since spawn (Main's oldest-first pick).
+func alive_time() -> float:
+	return _alive_t
+
+
+## Begin the reshape (M7). Only a working shooter can convert —
+## from its SEEK entry flight or its HOLD post — and only once:
+## the phase gate makes a second order a no-op. Any muzzle charge
+## in progress is cancelled outright, so no shot can ever leave a
+## reshaping ship, and the gun goes silent from this frame.
+func begin_conversion() -> void:
+	if _role != "shooter":
+		return
+	if phase != Phase.SEEK and phase != Phase.HOLD:
+		return
+	phase = Phase.CONVERT
+	_convert_t = 0.0
+	_convert_stage_emitted = 0
+	_convert_from_color = draw_color
+	_charging = false
+	_charge_t = 0.0
+	velocity = Vector2.ZERO
+	queue_redraw()
+
+
 func step(delta: float, canisters: Array[Canister]) -> void:
 	_flash_t += delta
+	_alive_t += delta
 	if phase == Phase.LEAVE:
 		exit_age += delta
 	else:
@@ -125,6 +187,8 @@ func step(delta: float, canisters: Array[Canister]) -> void:
 			_telegraph_t -= delta
 			if _telegraph_t <= 0.0:
 				phase = Phase.SEEK
+		Phase.CONVERT:
+			_step_convert(delta)
 		Phase.SEEK:
 			if _role == "shooter":
 				_step_shooter_seek(delta)
@@ -162,6 +226,33 @@ func _step_thief_seek(delta: float, canisters: Array[Canister]) -> void:
 				buzzed_this_drag = false # a fresh drag can be buzzed again
 				phase = Phase.DRAG
 				exit_point = Tuning.nearest_exit_point(global_position)
+
+
+## The reshape (M7): the ship holds its position and rebuilds
+## itself over CONVERT_TIME. It cannot fire (the charge was
+## cancelled at the order), cannot latch, cannot move — the
+## transformation IS the telegraph, and it stays fully killable
+## throughout: a pirate shot mid-reshape dies a gunner. The
+## colour cross-fades to the grabber's coral as the staging runs;
+## at completion the role flips and the plain thief SEEK takes
+## over in this same hull (its gunner score and shards stay —
+## type_name never changes).
+func _step_convert(delta: float) -> void:
+	velocity = Vector2.ZERO
+	_convert_t += delta
+	var frac: float = clampf(_convert_t / Tuning.CONVERT_TIME, 0.0, 1.0)
+	draw_color = _convert_from_color.lerp(_grabber_color, frac)
+	if _convert_stage_emitted < 1 and frac >= 1.0 / 3.0:
+		_convert_stage_emitted = 1
+		convert_stage.emit(1)
+	if _convert_stage_emitted < 2 and frac >= 2.0 / 3.0:
+		_convert_stage_emitted = 2
+		convert_stage.emit(2)
+	if frac >= 1.0:
+		_role = "thief"
+		phase = Phase.SEEK
+		draw_color = _grabber_color
+		convert_stage.emit(3)
 
 
 ## Shooter entry: fly to a standoff point in the def's range band
@@ -311,6 +402,9 @@ func _draw() -> void:
 		draw_line(Vector2(-11.0, -11.0), Vector2(11.0, 11.0), col, 2.0, true)
 		draw_line(Vector2(-11.0, 11.0), Vector2(11.0, -11.0), col, 2.0, true)
 		return
+	if phase == Phase.CONVERT:
+		_draw_convert()
+		return
 	draw_set_transform(Vector2.ZERO, _facing.angle(), Vector2.ONE)
 	var pts: PackedVector2Array = PackedVector2Array([
 		Vector2(16.0, 0.0), Vector2(-6.0, 11.0), Vector2(-12.0, 5.0),
@@ -326,6 +420,10 @@ func _draw() -> void:
 		# Swept rear fins mark the hunter silhouette apart.
 		draw_line(Vector2(-10.0, -6.0), Vector2(-19.0, -13.0), draw_color, 2.0, true)
 		draw_line(Vector2(-10.0, 6.0), Vector2(-19.0, 13.0), draw_color, 2.0, true)
+	if _role == "thief":
+		# The latch claw, open at the nose: the getter's standing
+		# mark — natural grabbers and completed converts alike.
+		_draw_claw(1.0)
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	# Charge-up telegraph: a muzzle glow that grows and whitens as
 	# the shot nears — nothing fires without this warning.
@@ -336,3 +434,64 @@ func _draw() -> void:
 		draw_circle(glow_pos, lerpf(2.0, 4.5, frac),
 			Color(draw_color, 0.35 + 0.4 * frac))
 		draw_circle(glow_pos, lerpf(1.0, 2.6, frac), glow_col)
+
+
+func _ease_out(x: float) -> float:
+	var c: float = clampf(x, 0.0, 1.0)
+	return 1.0 - pow(1.0 - c, 3.0)
+
+
+## The latch claw at the nose: two mandible lines from fixed
+## roots either side of the nose, their tips travelling from the
+## folded pose (tucked back along the nose flanks) to the open
+## pose (forward pincers) as open_f runs 0 -> 1. Drawn in the
+## ship's local (facing) space, like every other mark.
+func _draw_claw(open_f: float) -> void:
+	var root_a: Vector2 = Vector2(15.0, -3.0)
+	var root_b: Vector2 = Vector2(15.0, 3.0)
+	var tip_a: Vector2 = Vector2(8.0, -5.5).lerp(
+		Vector2(24.0, -9.0), open_f)
+	var tip_b: Vector2 = Vector2(8.0, 5.5).lerp(
+		Vector2(24.0, 9.0), open_f)
+	draw_line(root_a, tip_a, draw_color, 2.0, true)
+	draw_line(root_b, tip_b, draw_color, 2.0, true)
+
+
+## The reshape, drawn (M7): a dedicated staging path, not the
+## role branches — the gunner's marks fold away while the
+## thief's claw unfolds, the hull breathes through a scale
+## pulse, and the colour (already cross-fading in _step_convert)
+## lands on coral. Beat 1 (frac 0 -> 0.34): the cheek plates
+## lerp from their drawn positions to tucked positions flush
+## against the hull's aft edges. Beat 2 (frac 0.33 -> 0.67):
+## the claw unfolds at the nose, ease-out. Beat 3: the claw
+## stands open and the last of the colour lands — at completion
+## the plain thief draw takes over with the claw already out,
+## so the silhouette never pops.
+func _draw_convert() -> void:
+	var frac: float = clampf(_convert_t / Tuning.CONVERT_TIME, 0.0, 1.0)
+	var fold_f: float = _ease_out(clampf(frac / 0.34, 0.0, 1.0))
+	var claw_f: float = _ease_out(clampf((frac - 0.33) / 0.34, 0.0, 1.0))
+	var pulse: float = 1.0 + 0.15 * sin(PI * frac)
+	draw_set_transform(Vector2.ZERO, _facing.angle(),
+		Vector2.ONE * pulse)
+	var pts: PackedVector2Array = PackedVector2Array([
+		Vector2(16.0, 0.0), Vector2(-6.0, 11.0), Vector2(-12.0, 5.0),
+		Vector2(-12.0, -5.0), Vector2(-6.0, -11.0), Vector2(16.0, 0.0)])
+	draw_polyline(pts, draw_color, 2.0, true)
+	var eye: Color = draw_color.lerp(Color.WHITE, 0.7)
+	draw_circle(Vector2(4.0, 0.0), 2.5, eye)
+	# Beat 1: cheek plates fold flat against the hull.
+	var plate_a0: Vector2 = Vector2(-2.0, -13.0).lerp(
+		Vector2(3.0, -5.5), fold_f)
+	var plate_a1: Vector2 = Vector2(8.0, -9.0).lerp(
+		Vector2(-6.0, -10.5), fold_f)
+	var plate_b0: Vector2 = Vector2(-2.0, 13.0).lerp(
+		Vector2(3.0, 5.5), fold_f)
+	var plate_b1: Vector2 = Vector2(8.0, 9.0).lerp(
+		Vector2(-6.0, 10.5), fold_f)
+	draw_line(plate_a0, plate_a1, draw_color, 2.0, true)
+	draw_line(plate_b0, plate_b1, draw_color, 2.0, true)
+	# Beat 2: the claw unfolds at the nose.
+	_draw_claw(claw_f)
+	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
