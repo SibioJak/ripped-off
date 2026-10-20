@@ -659,7 +659,10 @@ func _bullet_hit(b: Bullet) -> Pirate:
 ## is within Tuning.BOSS_PROXIMITY_RADIUS of the boss's centre
 ## at the moment of impact, the same hit deals double damage
 ## and pays the boosted tick — the close, dangerous line is the
-## fast line. A dying boss takes no hits: the spectacle is
+## fast line. PASS-THROUGH WEAK POINTS: a part hit also wounds
+## the hull by the same amount (see the dispatch below), so
+## aiming at the hardware progresses the kill as well as
+## disabling it. A dying boss takes no hits: the spectacle is
 ## already running and bullets fly through.
 func _bullet_hit_boss(b: Bullet) -> bool:
 	for boss: Boss in bosses:
@@ -684,7 +687,15 @@ func _bullet_hit_boss(b: Bullet) -> bool:
 				if what == "hull":
 					boss.damage_hull(amount)
 				else:
+					# PASS-THROUGH: the part resolves first (a
+					# breaking hit always lands its break payout),
+					# then the hull takes the identical amount
+					# through damage_hull — radial thresholds, the
+					# hull flash and the death sequence behave
+					# exactly as for a hull hit. The tick above was
+					# paid once; pass-through adds no second payment.
 					boss.damage_part(what, amount)
+					boss.damage_hull(amount)
 				return true
 	return false
 
