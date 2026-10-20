@@ -1027,5 +1027,117 @@ func _ready() -> void:
 		boss7.hull_hp == 80 - Tuning.BOSS_PROXIMITY_DAMAGE
 			and boss7.radial_count == radial_before + 1)
 
+	# --- Pass-through weak points --------------------------------
+	# A part hit also wounds the hull by the same amount: the
+	# part resolves first (a breaking hit always lands its break
+	# payout), then the hull takes the identical amount through
+	# damage_hull. Tick points stay paid ONCE per connecting
+	# bullet at the proximity rate — no second payment for the
+	# pass-through. Same discipline as 81-86: real bullet path,
+	# multiplier pinned at 1.0, turrets parked, field cleared.
+	var boss8: Boss = await _start_boss_wave()
+	boss8.park_turrets()
+	_clear_hostiles()
+	game.multiplier = 1.0
+	game.mult_grace_t = 99.0
+
+	# (87) FAR part hit: part -1, hull -1, one base tick (+5).
+	game.player.global_position = boss8.global_position + Vector2(500.0, 0.0)
+	var pt_part0: int = boss8.part_hp(Boss.PART_TURRET_L)
+	var pt_hull0: int = boss8.hull_hp
+	var pt_score0: int = game.score
+	await _shoot_part_once(boss8, Boss.PART_TURRET_L)
+	_check("far part hit passes through: part -1, hull -1, one 5-point tick (part %d -> %d, hull %d -> %d, score +%d)"
+		% [pt_part0, boss8.part_hp(Boss.PART_TURRET_L), pt_hull0,
+			boss8.hull_hp, game.score - pt_score0],
+		boss8.part_hp(Boss.PART_TURRET_L) == pt_part0 - 1
+			and boss8.hull_hp == pt_hull0 - 1
+			and game.score - pt_score0 == Tuning.BOSS_TICK_POINTS)
+
+	# (88) CLOSE part hit: part -2, hull -2, one boosted tick (+20).
+	game.player.global_position = boss8.global_position + Vector2(250.0, 0.0)
+	var pc_part0: int = boss8.part_hp(Boss.PART_TURRET_L)
+	var pc_hull0: int = boss8.hull_hp
+	var pc_score0: int = game.score
+	await _shoot_part_once(boss8, Boss.PART_TURRET_L)
+	_check("close part hit passes through: part -2, hull -2, one 20-point tick (part %d -> %d, hull %d -> %d, score +%d)"
+		% [pc_part0, boss8.part_hp(Boss.PART_TURRET_L), pc_hull0,
+			boss8.hull_hp, game.score - pc_score0],
+		boss8.part_hp(Boss.PART_TURRET_L)
+				== pc_part0 - Tuning.BOSS_PROXIMITY_DAMAGE
+			and boss8.hull_hp == pc_hull0 - Tuning.BOSS_PROXIMITY_DAMAGE
+			and game.score - pc_score0
+				== Tuning.BOSS_PROXIMITY_TICK_POINTS)
+
+	# (89) A part hit whose pass-through crosses the 66% hull
+	# line queues exactly one radial burst, as a hull hit would.
+	var boss9: Boss = await _start_boss_wave()
+	boss9.park_turrets()
+	_clear_hostiles()
+	boss9.hull_hp = 80 # just above the 66% line (79.2 of 120)
+	game.player.global_position = boss9.global_position + Vector2(500.0, 0.0)
+	var th_part0: int = boss9.part_hp(Boss.PART_TURRET_L)
+	var th_radial0: int = boss9.radial_count
+	await _shoot_part_once(boss9, Boss.PART_TURRET_L)
+	for i: int in range(150):
+		await _frames(1)
+		if boss9.radial_count > th_radial0:
+			break
+	await _frames(45) # settle: a phantom second ring would show
+	_check("part hit crossing the 66%% hull line queues exactly one radial (hull %d, part %d -> %d, rings %d -> %d)"
+		% [boss9.hull_hp, th_part0, boss9.part_hp(Boss.PART_TURRET_L),
+			th_radial0, boss9.radial_count],
+		boss9.hull_hp == 79
+			and boss9.part_hp(Boss.PART_TURRET_L) == th_part0 - 1
+			and boss9.radial_count == th_radial0 + 1)
+
+	# (90) Lethal pass-through with a simultaneous break — on
+	# the grab arm WHILE it is mid-pull on a canister. One close
+	# hit breaks the arm (break payout lands: 20 tick + 300
+	# break bonus at mult 1.0 = 320, nothing else pays in the
+	# window) and the pass-through kills the hull: the held
+	# canister drops LOOSE via the break/death path, and the
+	# staged death completes — wave advances, no soft-lock.
+	var boss10: Boss = await _start_boss_wave()
+	boss10.park_turrets()
+	_clear_hostiles()
+	game.multiplier = 1.0
+	game.mult_grace_t = 99.0
+	var held: Canister = null
+	for i: int in range(700):
+		await _frames(1)
+		for c: Canister in game.canisters:
+			if c.state == Canister.State.DRAGGING and c.holder == boss10:
+				held = c
+				break
+		if held != null:
+			break
+	# Direct writes (the check-86/89 precedent): the arm is one
+	# close hit from breaking, the hull one close pass-through
+	# from death.
+	var arm_pd: Dictionary = boss10._parts[Boss.PART_ARM] as Dictionary
+	arm_pd["hp"] = Tuning.BOSS_PROXIMITY_DAMAGE
+	boss10._parts[Boss.PART_ARM] = arm_pd
+	boss10.hull_hp = Tuning.BOSS_PROXIMITY_DAMAGE
+	game.player.global_position = boss10.global_position + Vector2(250.0, 0.0)
+	var kill_score0: int = game.score
+	await _shoot_part_once(boss10, Boss.PART_ARM)
+	var kill_delta: int = game.score - kill_score0
+	var arm_broke90: bool = boss10.is_part_broken(Boss.PART_ARM)
+	var boss_dying90: bool = boss10.phase == Boss.Phase.DYING
+	var held_loose90: bool = held != null \
+		and held.state == Canister.State.LOOSE
+	for i: int in range(300):
+		await _frames(1)
+		if game.wave == 6:
+			break
+	_check("lethal close arm hit: break pays, pass-through kills, held canister drops LOOSE, death completes (score +%d = 20 tick + 300 break)"
+		% kill_delta,
+		held != null and arm_broke90 and boss_dying90 and held_loose90
+			and kill_delta == Tuning.BOSS_PROXIMITY_TICK_POINTS
+				+ Tuning.BOSS_PART_SCORE
+			and game.wave == 6 and game.bosses.is_empty()
+			and not game.boss_wave)
+
 	print("HARNESS: %d/%d checks passed" % [_passed, _passed + _failed])
 	get_tree().quit(0 if _failed == 0 else 1)
