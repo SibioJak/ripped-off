@@ -55,6 +55,40 @@ func _record_conv_stage(stage: int) -> void:
 	_conv_stages.append(stage)
 
 
+## M8 helpers: deck composition counts, longest same-class run,
+## and the expected composition the Part A formulas predict for
+## a wave (read through the director's own share helpers).
+func _deck_counts(snap: Array[String]) -> Dictionary:
+	var counts: Dictionary = {"hunter": 0, "gunner": 0, "grabber": 0}
+	for card: String in snap:
+		counts[card] = int(counts.get(card, 0)) + 1
+	return counts
+
+
+func _deck_max_run(snap: Array[String]) -> int:
+	var best: int = 0
+	var cur: int = 0
+	var prev: String = ""
+	for card: String in snap:
+		if card == prev:
+			cur += 1
+		else:
+			prev = card
+			cur = 1
+		best = maxi(best, cur)
+	return best
+
+
+func _expected_deck_counts(d: SpawnDirector, w: int) -> Dictionary:
+	d.start_wave(w)
+	var quota: int = Tuning.WAVE_BASE_QUOTA \
+		+ Tuning.WAVE_QUOTA_PER_WAVE * w
+	var hn: int = roundi(float(quota) * d.hunter_share())
+	var gn: int = roundi(float(quota) * (1.0 - d.hunter_share()) \
+		* d.gunner_share())
+	return {"hunter": hn, "gunner": gn, "grabber": quota - hn - gn}
+
+
 func _check(label: String, ok: bool) -> void:
 	if ok:
 		_passed += 1
@@ -1502,28 +1536,33 @@ func _ready() -> void:
 			and int(hdef.get("shards", 0)) == 5
 			and float(hdef.get("radius", 0.0)) == 13.0
 			and float(hdef.get("fire_interval", 0.0)) == 2.6)
+	# M8 REWORK of the dealing half of this check: pick_type is
+	# gone — the mix is a dealt deck now, asserted exactly at the
+	# deck level. Same intent: waves 1-2 keep hunters out of the
+	# mix entirely; wave 3's deck holds hunters as a minority.
 	var dd: SpawnDirector = SpawnDirector.new()
 	seed(777001)
 	var early_hunters: int = 0
 	var early_waves: Array[int] = [1, 2]
 	for w: int in early_waves:
 		dd.start_wave(w)
-		for i: int in range(200):
-			if dd.pick_type(0) == "hunter":
+		var snap_e: Array[String] = dd.deck_snapshot()
+		for card_e: String in snap_e:
+			if card_e == "hunter":
 				early_hunters += 1
 	dd.start_wave(3)
 	var deal_counts: Dictionary = {"hunter": 0, "gunner": 0, "grabber": 0}
-	for i: int in range(400):
-		var dealt_t: String = dd.pick_type(0)
-		deal_counts[dealt_t] = int(deal_counts.get(dealt_t, 0)) + 1
+	var snap_3: Array[String] = dd.deck_snapshot()
+	for card_3: String in snap_3:
+		deal_counts[card_3] = int(deal_counts.get(card_3, 0)) + 1
 	dd.queue_free()
-	_check("director deals zero hunters on waves 1-2; wave 3 deals hunters as a minority (%s)"
+	_check("director decks hold zero hunters on waves 1-2; wave 3 deck holds hunters as a minority (%s)"
 		% str(deal_counts),
 		early_hunters == 0
 			and int(deal_counts.get("hunter", 0)) > 0
 			and int(deal_counts.get("hunter", 0))
 				< int(deal_counts.get("grabber", 0))
-			and int(deal_counts.get("hunter", 0)) < 100)
+			and int(deal_counts.get("hunter", 0)) < snap_3.size() / 4)
 
 	# (102) The alive cap is a hard gate: drive a wave-3 director
 	# stepping manually, non-hunters "dying" the instant they are
@@ -1624,6 +1663,16 @@ func _ready() -> void:
 	game.rank = 0.0
 	game.player.global_position = Vector2(640.0, 620.0)
 	game.player.invincible_t = 1000000000.0
+	# M8 staging note: the seed is pinned across the spawn. The
+	# first-shot geometry this check samples depends on the
+	# hunter's spawn draws (first-shot delay, strafe side), which
+	# read the global RNG stream — so the no-lead margin used to
+	# ride on however much stream earlier checks happened to
+	# consume (it read 0.185-0.187 through M7, then 0.085 once
+	# M8's deck build changed the draw count, with the lead error
+	# itself still 0.000). The pin makes the sampled geometry
+	# the intended one every run; the assertions are untouched.
+	seed(777)
 	var hunt105: Pirate = game.spawn_pirate("hunter", Vector2(640.0, 180.0))
 	_watch_pirate = hunt105
 	_lead_shots.clear()
@@ -2392,6 +2441,205 @@ func _ready() -> void:
 		% Tuning.CONVERT_NO_STEAL_BACKSTOP,
 		control134 and fired134 and is_instance_valid(t134)
 			and t134.current_role() == "thief")
+
+	# --- M8: spawn flow (dealt deck) + enemy-bullet pulse --------
+
+	# (135) Deck composition is exact: the built deck's counts
+	# equal the Part A formulas at waves 1, 2, 3 and 10, and the
+	# deck size is the wave quota (quota_left in sync).
+	var d135: SpawnDirector = SpawnDirector.new()
+	var comp_ok135: bool = true
+	var comp_detail135: String = ""
+	for w135: int in [1, 2, 3, 10]:
+		seed(31000 + w135)
+		d135.start_wave(w135)
+		var snap135: Array[String] = d135.deck_snapshot()
+		var exp135: Dictionary = _expected_deck_counts(d135, w135)
+		var got135: Dictionary = _deck_counts(snap135)
+		var quota135: int = Tuning.WAVE_BASE_QUOTA \
+			+ Tuning.WAVE_QUOTA_PER_WAVE * w135
+		comp_detail135 += " w%d %s" % [w135, str(got135)]
+		if got135 != exp135 or snap135.size() != quota135 \
+				or d135.quota_left != quota135:
+			comp_ok135 = false
+	d135.queue_free()
+	_check("deck composition is exact at waves 1/2/3/10 (%s)" % comp_detail135,
+		comp_ok135)
+
+	# (136) Max-run guarantee: across 40 freshly built decks at
+	# waves 3 and 10 each, no same-class run exceeds
+	# SPAWN_DECK_MAX_RUN, and every deck's composition still
+	# equals the formula (the run guard shapes the order only,
+	# never the counts).
+	var d136: SpawnDirector = SpawnDirector.new()
+	var runs_ok136: bool = true
+	var worst136: int = 0
+	for w136: int in [3, 10]:
+		var exp136: Dictionary = _expected_deck_counts(d136, w136)
+		for k136: int in range(40):
+			seed(41000 + w136 * 1000 + k136)
+			d136.start_wave(w136)
+			var snap136: Array[String] = d136.deck_snapshot()
+			var run136: int = _deck_max_run(snap136)
+			worst136 = maxi(worst136, run136)
+			if run136 > Tuning.SPAWN_DECK_MAX_RUN \
+					or _deck_counts(snap136) != exp136:
+				runs_ok136 = false
+	d136.queue_free()
+	_check("deck construction: 80 fresh decks at waves 3/10 never run past %d (worst %d) and keep exact composition"
+		% [Tuning.SPAWN_DECK_MAX_RUN, worst136], runs_ok136)
+
+	# (137) Hunter-cap dealing: with hunters_alive at the cap, a
+	# hunter at the front of the deck is SKIPPED — the next legal
+	# card deals and the hunter stays in the deck. When the
+	# remainder is all hunters and the cap is full, nothing deals
+	# at all; the moment the cap frees, the hunter deals.
+	var d137: SpawnDirector = SpawnDirector.new()
+	d137.spawn_requested.connect(_record_spawn)
+	var front_hunter137: bool = false
+	for k137: int in range(200):
+		seed(51000 + k137)
+		d137.start_wave(3)
+		var probe137: Array[String] = d137.deck_snapshot()
+		if not probe137.is_empty() and probe137[0] == "hunter":
+			front_hunter137 = true
+			break
+	var cap137: int = d137.hunter_alive_cap()
+	_dealt_types.clear()
+	d137.step(5.0, 0, Tuning.depot_center(), 0.0, cap137)
+	var skipped137: bool = front_hunter137 and _dealt_types.size() == 1 \
+		and _dealt_types[0] != "hunter" \
+		and int(_deck_counts(d137.deck_snapshot()).get("hunter", 0)) == 2
+	var drain_guard137: int = 0
+	while drain_guard137 < 40:
+		var snap_d137: Array[String] = d137.deck_snapshot()
+		if int(_deck_counts(snap_d137).get("grabber", 0)) \
+				+ int(_deck_counts(snap_d137).get("gunner", 0)) == 0:
+			break
+		d137.step(5.0, 0, Tuning.depot_center(), 0.0, cap137)
+		drain_guard137 += 1
+	var remainder137: Array[String] = d137.deck_snapshot()
+	_dealt_types.clear()
+	for i137: int in range(120):
+		d137.step(1.0 / 60.0, 0, Tuning.depot_center(), 0.0, cap137)
+	var stalled137: bool = _dealt_types.is_empty() \
+		and remainder137.size() == 2 and d137.quota_left == 2
+	d137.step(5.0, 0, Tuning.depot_center(), 0.0, cap137 - 1)
+	var freed137: bool = _dealt_types.size() == 1 \
+		and _dealt_types[0] == "hunter"
+	d137.queue_free()
+	_check("hunter-cap dealing: capped front hunter is skipped, all-hunter remainder stalls, freed cap deals it (dealt %s)"
+		% str(_dealt_types), skipped137 and stalled137 and freed137)
+
+	# (138) Flow pacing: the factor itself (specced value on an
+	# empty field, 1.0 at the cap, monotonic between), plus the
+	# director's dealt interval — brisk on an empty field, full
+	# near the cap. INTEGRATION FORM (disclosed): the harness
+	# reads the director's _spawn_t right after a forced deal
+	# (the M7 direct-access precedent) and bounds it by
+	# rank interval x flow factor x the jitter range [0.8, 1.25].
+	var frac_ok138: bool = absf(Tuning.spawn_flow_frac(0, 9)
+			- Tuning.SPAWN_FLOW_MIN_FRAC) < 0.001 \
+		and absf(Tuning.spawn_flow_frac(9, 9) - 1.0) < 0.001
+	var mono138: bool = true
+	var prev138: float = Tuning.spawn_flow_frac(0, 9)
+	for a138: int in range(1, 10):
+		var f138: float = Tuning.spawn_flow_frac(a138, 9)
+		if f138 < prev138:
+			mono138 = false
+		prev138 = f138
+	var d138a: SpawnDirector = SpawnDirector.new()
+	d138a.start_wave(10) # rank 0 alive cap: min(4 + 9, 9) = 9
+	d138a.step(5.0, 0, Tuning.depot_center(), 0.0, 0)
+	var empty_t138: float = d138a._spawn_t
+	var d138b: SpawnDirector = SpawnDirector.new()
+	d138b.start_wave(10)
+	d138b.step(5.0, 8, Tuning.depot_center(), 0.0, 0)
+	var full_t138: float = d138b._spawn_t
+	d138a.queue_free()
+	d138b.queue_free()
+	var base138: float = Tuning.rank_spawn_interval(Tuning.SPAWN_INTERVAL, 0.0)
+	var empty_ok138: bool = empty_t138 \
+			>= base138 * Tuning.SPAWN_FLOW_MIN_FRAC * 0.8 - 0.001 \
+		and empty_t138 \
+			<= base138 * Tuning.SPAWN_FLOW_MIN_FRAC * 1.25 + 0.001
+	var full_frac138: float = Tuning.spawn_flow_frac(8, 9)
+	var full_ok138: bool = full_t138 >= base138 * full_frac138 * 0.8 - 0.001 \
+		and full_t138 <= base138 * full_frac138 * 1.25 + 0.001
+	_check("flow pacing: factor %.2f (empty) -> 1.0 (full) and monotonic; dealt intervals %.3fs empty / %.3fs at 8-of-9 alive"
+		% [Tuning.SPAWN_FLOW_MIN_FRAC, empty_t138, full_t138],
+		frac_ok138 and mono138 and empty_ok138 and full_ok138
+			and full_t138 > empty_t138)
+
+	# (139) Spawn separation: 30 consecutive picks with the
+	# player parked at the depot centre — every consecutive pair
+	# at least SPAWN_MIN_SEPARATION apart.
+	var d139: SpawnDirector = SpawnDirector.new()
+	d139.start_wave(1)
+	var prev139: Vector2 = d139.pick_spawn_point(Tuning.depot_center())
+	var min_pair139: float = INF
+	for i139: int in range(29):
+		var p139: Vector2 = d139.pick_spawn_point(Tuning.depot_center())
+		min_pair139 = minf(min_pair139, p139.distance_to(prev139))
+		prev139 = p139
+	d139.queue_free()
+	_check("spawn separation: 30 consecutive picks at a centred player stay >= %.0fpx apart (min pair %.1fpx)"
+		% [Tuning.SPAWN_MIN_SEPARATION, min_pair139],
+		min_pair139 >= Tuning.SPAWN_MIN_SEPARATION)
+
+	# (140) Enemy-bullet pulse: the shared clock swings the full
+	# range across one breath; two instances sampled in the same
+	# instant agree; a tinted bullet's drawn core stays strictly
+	# between its tint and white and its green channel visibly
+	# climbs toward white at the peak; the pulse constants are
+	# as specced. Bounds asserted, never phase-exact values.
+	var b140a: EnemyBullet = EnemyBullet.new()
+	var b140b: EnemyBullet = EnemyBullet.new()
+	var b140t: EnemyBullet = EnemyBullet.new()
+	b140t.setup_tinted(Vector2.ZERO, Vector2.RIGHT,
+		Color(1.0, 0.2, 0.9), Color(0.3, 0.02, 0.35))
+	var same_p140: float = absf(b140a.pulse_value() - b140b.pulse_value())
+	var same_c140: Color = b140a.draw_core_color() - b140b.draw_core_color()
+	var p_min140: float = 1.0
+	var p_max140: float = 0.0
+	var tint_g_max140: float = 0.2
+	var r_min140: float = Tuning.ENEMY_BULLET_RADIUS * 2.0
+	var r_max140: float = 0.0
+	var t140: float = 0.0
+	while t140 < 0.55: # one full breath at 2.4Hz is ~0.417s
+		var pv140: float = b140a.pulse_value()
+		p_min140 = minf(p_min140, pv140)
+		p_max140 = maxf(p_max140, pv140)
+		tint_g_max140 = maxf(tint_g_max140, b140t.draw_core_color().g)
+		var rr140: float = b140a.draw_core_radius()
+		r_min140 = minf(r_min140, rr140)
+		r_max140 = maxf(r_max140, rr140)
+		await get_tree().create_timer(0.02).timeout
+		t140 += 0.02
+	var tint140: Color = b140t.draw_core_color()
+	var tint_bounds140: bool = tint140.r >= 1.0 - 0.001 \
+		and tint140.r <= 1.0 \
+		and tint140.g >= 0.2 - 0.001 and tint140.g <= 1.0 \
+		and tint140.b >= 0.9 - 0.001 and tint140.b <= 1.0
+	b140a.queue_free()
+	b140b.queue_free()
+	b140t.queue_free()
+	_check("enemy-bullet pulse: swing %.2f..%.2f, instances in sync (dp %.4f), core radius %.2f..%.2f, tinted core climbs toward white (g peak %.2f) within tint..white bounds"
+		% [p_min140, p_max140, same_p140, r_min140, r_max140,
+			tint_g_max140],
+		Tuning.ENEMY_BULLET_PULSE_HZ == 2.4
+			and Tuning.ENEMY_BULLET_PULSE_DEPTH == 0.30
+			and Tuning.ENEMY_BULLET_PULSE_RADIUS_FRAC == 0.18
+			and p_max140 - p_min140 > 0.8
+			and same_p140 < 0.02
+			and absf(same_c140.r) < 0.01 and absf(same_c140.g) < 0.01
+			and absf(same_c140.b) < 0.01
+			and r_min140 >= Tuning.ENEMY_BULLET_RADIUS
+				* (1.0 - Tuning.ENEMY_BULLET_PULSE_RADIUS_FRAC) - 0.01
+			and r_max140 <= Tuning.ENEMY_BULLET_RADIUS
+				* (1.0 + Tuning.ENEMY_BULLET_PULSE_RADIUS_FRAC) + 0.01
+			and r_max140 - r_min140 > 0.9
+			and tint_bounds140 and tint_g_max140 > 0.3)
 
 	print("HARNESS: %d/%d checks passed" % [_passed, _passed + _failed])
 	get_tree().quit(0 if _failed == 0 else 1)
