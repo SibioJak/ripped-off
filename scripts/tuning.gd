@@ -110,6 +110,23 @@ const GUNNER_SHARE_MIN: float = 0.25 # gunner share of the quota from wave 2
 const GUNNER_SHARE_PER_WAVE: float = 0.03 # share grows with the wave
 const GUNNER_SHARE_CAP: float = 0.55
 
+# --- Hunters (M6: the direct-challenge class; numbers live in enemy_defs.gd) --------
+## The hunter never looks at a canister: it closes on the player,
+## strafes around them at orbit range and fires lead shots. Its
+## job is to keep the player moving — a parked or steadily
+## strafing ship is exactly what its aim punishes.
+const HUNTER_CHARGE_TIME: float = 0.35 # muzzle glow wind-up before every shot
+const HUNTER_ORBIT_RANGE: float = 150.0 # pursuit closes to this band, then strafes
+const HUNTER_LEAD_FACTOR: float = 0.75 # shots lead the player's velocity by
+	# this fraction of the full time-of-flight lead: a steady strafe
+	# gets punished, a direction change beats the shot
+const HUNTER_SHARE_BASE: float = 0.12 # hunter share of spawn rolls from wave 3
+const HUNTER_SHARE_PER_WAVE: float = 0.01 # share grows with the wave
+const HUNTER_SHARE_CAP: float = 0.22
+const HUNTER_ALIVE_CAP: int = 2 # concurrent hunters on the field, waves 3-6
+const HUNTER_ALIVE_CAP_LATE: int = 3 # ... from HUNTER_ALIVE_CAP_LATE_WAVE
+const HUNTER_ALIVE_CAP_LATE_WAVE: int = 7
+
 # --- Enemy bullets ------------------------------------------------------------------
 const ENEMY_BULLET_SPEED: float = 340.0
 const ENEMY_BULLET_RADIUS: float = 4.0

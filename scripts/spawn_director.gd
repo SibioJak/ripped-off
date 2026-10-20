@@ -6,7 +6,9 @@ extends Node
 ## on the arena walls, never within the fairness exclusion radius
 ## of the player. Rank (pushed in by Main each step) tightens the
 ## pacing and lifts the alive cap; from wave 2 the quota mixes
-## gunners in alongside grabbers, the share growing with the wave.
+## gunners in alongside grabbers, the share growing with the wave;
+## from wave 3 hunters join the spawn rolls, their share gated by
+## a hard cap on hunters alive at once (Main reports the count).
 
 signal spawn_requested(type_name: String, pos: Vector2)
 
@@ -34,7 +36,7 @@ func quota_exhausted() -> bool:
 
 
 func step(delta: float, alive_count: int, player_pos: Vector2,
-		rank: float = 0.0) -> void:
+		rank: float = 0.0, hunters_alive: int = 0) -> void:
 	if not active or quota_left <= 0:
 		return
 	var bonus: int = Tuning.rank_alive_bonus(rank)
@@ -48,7 +50,8 @@ func step(delta: float, alive_count: int, player_pos: Vector2,
 		_spawn_t = Tuning.rank_spawn_interval(Tuning.SPAWN_INTERVAL, rank) \
 			* randf_range(0.8, 1.25)
 		quota_left -= 1
-		spawn_requested.emit(pick_type(), pick_spawn_point(player_pos))
+		spawn_requested.emit(pick_type(hunters_alive),
+			pick_spawn_point(player_pos))
 
 
 ## The gunner share of a wave's quota: none on wave 1, then the
@@ -62,7 +65,34 @@ func gunner_share() -> float:
 		0.0, Tuning.GUNNER_SHARE_CAP)
 
 
-func pick_type() -> String:
+## The hunter share of a wave's spawn rolls: none before wave 3,
+## then the Tuning base share growing per wave up to its cap.
+func hunter_share() -> float:
+	if wave < 3:
+		return 0.0
+	return clampf(
+		Tuning.HUNTER_SHARE_BASE
+			+ Tuning.HUNTER_SHARE_PER_WAVE * float(wave - 3),
+		0.0, Tuning.HUNTER_SHARE_CAP)
+
+
+## Concurrent hunters allowed on the field: a hard gate on the
+## share roll, so the direct-challenge class pressures in ones
+## and twos (threes late) instead of swarming.
+func hunter_alive_cap() -> int:
+	if wave < Tuning.HUNTER_ALIVE_CAP_LATE_WAVE:
+		return Tuning.HUNTER_ALIVE_CAP
+	return Tuning.HUNTER_ALIVE_CAP_LATE
+
+
+func pick_type(hunters_alive: int = 0) -> String:
+	# The hunter roll comes first and is short-circuited before
+	# wave 3, so early-wave rolls consume exactly the randoms
+	# they always did. At/over the alive cap the roll is skipped
+	# entirely — the cap is a hard gate, not a reroll.
+	if wave >= 3 and hunters_alive < hunter_alive_cap() \
+			and randf() < hunter_share():
+		return "hunter"
 	if randf() < gunner_share():
 		return "gunner"
 	return "grabber"

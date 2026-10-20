@@ -6,7 +6,10 @@ extends Node2D
 ## def's role: a "thief" hunts the nearest stealable canister and
 ## DRAGs it to an exit; a "shooter" flies to a standoff point and
 ## HOLDs, strafing in its range band and firing aimed shots, each
-## one announced by a visible muzzle charge-up. 1 HP: Main
+## one announced by a visible muzzle charge-up; a "hunter" (M6)
+## never looks at a canister at all — it pursues the player,
+## strafes around them at orbit range and fires lead shots, and
+## like the shooter it holds its hunt until killed. 1 HP: Main
 ## resolves bullet and ram kills; this script never dies on its
 ## own.
 
@@ -26,6 +29,7 @@ var exit_point: Vector2 = Vector2.ZERO
 
 ## Context Main pushes in every frame before stepping.
 var player_pos: Vector2 = Vector2.ZERO
+var player_vel: Vector2 = Vector2.ZERO # the hunter leads its shots by this
 var player_alive: bool = false
 var speed_scale: float = 1.0 # rank scaling, from Tuning via Main
 var fire_interval_scale: float = 1.0 # rank scaling, from Tuning via Main
@@ -57,6 +61,7 @@ var _strafe_dir: float = 1.0
 var _fire_t: float = 0.0
 var _charging: bool = false
 var _charge_t: float = 0.0
+var _charge_time: float = Tuning.GUNNER_CHARGE_TIME # per role, set in setup
 
 
 func _ready() -> void:
@@ -74,6 +79,8 @@ func setup(p_type: String, spawn_pos: Vector2) -> void:
 	_standoff_min = float(def.get("standoff_min", 260.0))
 	_standoff_max = float(def.get("standoff_max", 340.0))
 	_strafe_speed = float(def.get("strafe_speed", 55.0))
+	_charge_time = Tuning.HUNTER_CHARGE_TIME if _role == "hunter" \
+		else Tuning.GUNNER_CHARGE_TIME
 	_fire_t = _fire_interval * randf_range(0.75, 1.1) # first shot is not instant
 	_strafe_dir = 1.0 if randf() < 0.5 else -1.0
 	var c: Variant = def.get("color", Color(1.0, 0.38, 0.3, 1.0))
@@ -89,7 +96,7 @@ func setup(p_type: String, spawn_pos: Vector2) -> void:
 func charge_frac() -> float:
 	if not _charging:
 		return -1.0
-	return clampf(1.0 - _charge_t / Tuning.GUNNER_CHARGE_TIME, 0.0, 1.0)
+	return clampf(1.0 - _charge_t / _charge_time, 0.0, 1.0)
 
 
 ## The point a shot leaves from: the nose of the ship.
@@ -121,6 +128,8 @@ func step(delta: float, canisters: Array[Canister]) -> void:
 		Phase.SEEK:
 			if _role == "shooter":
 				_step_shooter_seek(delta)
+			elif _role == "hunter":
+				_step_hunter(delta)
 			else:
 				_step_thief_seek(delta, canisters)
 		Phase.DRAG:
@@ -205,7 +214,62 @@ func _step_shooter_hold(delta: float) -> void:
 		_fire_t -= delta
 		if _fire_t <= 0.0:
 			_charging = true
-			_charge_t = Tuning.GUNNER_CHARGE_TIME
+			_charge_t = _charge_time
+
+
+## Hunter: the direct-challenge class. It never targets, latches
+## or drags a canister — its target is the player, always. It
+## closes at full speed until it reaches HUNTER_ORBIT_RANGE, then
+## strafes tangentially around the player (orbit direction rolled
+## once per spawn, in setup) while a radial correction holds the
+## band. Its fire cycle mirrors the gunner's exactly — charge
+## first, nothing from any other phase, nothing while the player
+## is down, nothing from off-screen — but the shot itself is LED:
+## aimed at player_pos + player_vel x time-of-flight x
+## HUNTER_LEAD_FACTOR, so a steady strafe is punished and a
+## direction change beats it. Like the gunner, it has no exit of
+## its own: it holds its hunt until killed.
+func _step_hunter(delta: float) -> void:
+	var to_player: Vector2 = player_pos - global_position
+	var dist: float = to_player.length()
+	if player_alive and dist > 0.5:
+		_facing = to_player / dist
+	if dist > Tuning.HUNTER_ORBIT_RANGE:
+		_steer_toward(player_pos, _speed, delta)
+	else:
+		var radial: Vector2 = Vector2.RIGHT # outward, away from the player
+		if dist > 0.5:
+			radial = -to_player / dist
+		var tangent: Vector2 = radial.rotated(PI * 0.5) * _strafe_dir
+		var radial_fix: float = clampf(
+			(Tuning.HUNTER_ORBIT_RANGE - dist) * 2.0, -_speed, _speed)
+		var desired: Vector2 = tangent * _speed + radial * radial_fix
+		if desired.length() > _speed:
+			desired = desired.normalized() * _speed
+		velocity = desired * speed_scale
+		global_position += velocity * delta
+	global_position = Tuning.clamp_inside(global_position, radius)
+
+	if _charging:
+		_charge_t -= delta
+		if _charge_t <= 0.0:
+			_charging = false
+			_fire_t = _fire_interval * fire_interval_scale \
+				* randf_range(0.9, 1.1)
+			if player_alive and Tuning.arena_rect().has_point(global_position):
+				var from: Vector2 = muzzle_pos()
+				var tof: float = from.distance_to(player_pos) \
+					/ Tuning.ENEMY_BULLET_SPEED
+				var lead_point: Vector2 = player_pos \
+					+ player_vel * tof * Tuning.HUNTER_LEAD_FACTOR
+				var dir: Vector2 = (lead_point - from).normalized()
+				if dir != Vector2.ZERO:
+					fired.emit(from, dir)
+	elif player_alive:
+		_fire_t -= delta
+		if _fire_t <= 0.0:
+			_charging = true
+			_charge_t = _charge_time
 
 
 func _target_valid() -> bool:
@@ -258,6 +322,10 @@ func _draw() -> void:
 		# Broadside cheek plates mark the gunner silhouette apart.
 		draw_line(Vector2(-2.0, -13.0), Vector2(8.0, -9.0), draw_color, 2.0, true)
 		draw_line(Vector2(-2.0, 13.0), Vector2(8.0, 9.0), draw_color, 2.0, true)
+	if _role == "hunter":
+		# Swept rear fins mark the hunter silhouette apart.
+		draw_line(Vector2(-10.0, -6.0), Vector2(-19.0, -13.0), draw_color, 2.0, true)
+		draw_line(Vector2(-10.0, 6.0), Vector2(-19.0, 13.0), draw_color, 2.0, true)
 	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 	# Charge-up telegraph: a muzzle glow that grows and whitens as
 	# the shot nears — nothing fires without this warning.

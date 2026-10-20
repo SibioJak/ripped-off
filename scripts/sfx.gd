@@ -38,6 +38,8 @@ const STREAM_PATHS: Dictionary = {
 	"shot": "res://audio/sfx/shot.wav",
 	"death_grabber": "res://audio/sfx/death_grabber.wav",
 	"death_gunner": "res://audio/sfx/death_gunner.wav",
+	"death_hunter": "res://audio/sfx/death_gunner.wav", # M6: the hunter
+	# borrows the gunner's pop (no new renders this milestone)
 	"hit_tick": "res://audio/sfx/hit_tick.wav",
 	"shard_collect": "res://audio/sfx/shard_collect.wav",
 	"recovery_small": "res://audio/sfx/recovery_small.wav",

@@ -602,8 +602,14 @@ func _physics_process(delta: float) -> void:
 		_boss_pending = false
 		spawn_boss(wave)
 
-	# Spawning.
-	director.step(delta, pirates.size(), player.global_position, rank)
+	# Spawning. The director gates its hunter rolls on how many
+	# hunters are alive right now (its hard alive cap).
+	var hunters_alive: int = 0
+	for hp: Pirate in pirates:
+		if hp.type_name == "hunter":
+			hunters_alive += 1
+	director.step(delta, pirates.size(), player.global_position, rank,
+		hunters_alive)
 
 	# Pirates, then the canisters they drag or trail. Each pirate
 	# gets its per-frame context first: where the player is, whether
@@ -611,6 +617,7 @@ func _physics_process(delta: float) -> void:
 	var pirates_now: Array[Pirate] = pirates.duplicate()
 	for p: Pirate in pirates_now:
 		p.player_pos = player.global_position
+		p.player_vel = player.velocity
 		p.player_alive = player.alive
 		p.speed_scale = Tuning.rank_speed_mult(rank)
 		p.fire_interval_scale = Tuning.rank_fire_mult(rank)
