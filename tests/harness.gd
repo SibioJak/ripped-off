@@ -127,6 +127,21 @@ func _shoot_part_until_broken(b: Boss, part_id: String) -> bool:
 	return b.is_part_broken(part_id)
 
 
+## Proximity helper: land exactly one real player bullet on one
+## boss part. The shot approaches from the part's OUTER side:
+## fired from the left, the right turret sits behind a hull
+## circle and the bullet legitimately hits hull first (the
+## until-broken helper can grind through that; a one-shot
+## damage measurement cannot).
+func _shoot_part_once(b: Boss, part_id: String) -> void:
+	var pp: Vector2 = b.part_world(part_id)
+	var dir: Vector2 = Vector2.RIGHT
+	if pp.x > b.global_position.x:
+		dir = Vector2.LEFT
+	game.spawn_bullet(pp - dir * 40.0, dir)
+	await _frames(3)
+
+
 func _ready() -> void:
 	var packed: PackedScene = load("res://scenes/main.tscn") as PackedScene
 	game = packed.instantiate() as Main
@@ -924,6 +939,93 @@ func _ready() -> void:
 			and absf(float(first_l - first_r)) >= 30.0)
 	print("BOSS FIRE: left first shot frame %d, right frame %d; window totals L%d R%d"
 		% [first_l, first_r, boss5.shots_left, boss5.shots_right])
+
+	# --- Dreadnought proximity bonus ------------------------------
+	# Close-range hits (player within 300px of the boss's centre
+	# at impact) deal 2 damage and pay the boosted 20-point tick;
+	# far hits keep the original 1 damage / 5 points. All hits go
+	# through Main's real bullet path with the multiplier pinned
+	# at exactly 1.0, so score deltas are exact.
+	var boss6: Boss = await _start_boss_wave()
+	boss6.park_turrets() # no enemy bullet may buzz the exact deltas
+	_clear_hostiles()
+	game.multiplier = 1.0
+	game.mult_grace_t = 99.0
+
+	# (81) FAR hull hit: exactly 1 HP and exactly the base tick.
+	game.player.global_position = boss6.global_position + Vector2(500.0, 0.0)
+	var far_hull0: int = boss6.hull_hp
+	var far_score0: int = game.score
+	await _shoot_hull(boss6, 1)
+	_check("far boss hull hit deals 1 damage and pays 5 tick points (hp %d -> %d, score +%d)"
+		% [far_hull0, boss6.hull_hp, game.score - far_score0],
+		boss6.hull_hp == far_hull0 - 1
+			and game.score - far_score0 == Tuning.BOSS_TICK_POINTS)
+
+	# (82) CLOSE hull hit: exactly 2 HP and exactly the boosted tick.
+	game.player.global_position = boss6.global_position + Vector2(250.0, 0.0)
+	var close_hull0: int = boss6.hull_hp
+	var close_score0: int = game.score
+	await _shoot_hull(boss6, 1)
+	_check("close boss hull hit deals 2 damage and pays 20 tick points (hp %d -> %d, score +%d)"
+		% [close_hull0, boss6.hull_hp, game.score - close_score0],
+		boss6.hull_hp == close_hull0 - Tuning.BOSS_PROXIMITY_DAMAGE
+			and game.score - close_score0
+				== Tuning.BOSS_PROXIMITY_TICK_POINTS)
+
+	# (83) Part hits follow the same rule: 1 HP far, 2 HP close.
+	var prox_part: String = Boss.PART_TURRET_R
+	game.player.global_position = boss6.global_position + Vector2(500.0, 0.0)
+	var far_part0: int = boss6.part_hp(prox_part)
+	await _shoot_part_once(boss6, prox_part)
+	var far_part_delta: int = far_part0 - boss6.part_hp(prox_part)
+	game.player.global_position = boss6.global_position + Vector2(250.0, 0.0)
+	var close_part0: int = boss6.part_hp(prox_part)
+	await _shoot_part_once(boss6, prox_part)
+	var close_part_delta: int = close_part0 - boss6.part_hp(prox_part)
+	_check("boss part hits deal 1 damage far and 2 close (far -%d, close -%d)"
+		% [far_part_delta, close_part_delta],
+		far_part_delta == 1
+			and close_part_delta == Tuning.BOSS_PROXIMITY_DAMAGE)
+
+	# (84) The boundary itself: exactly the radius counts as close.
+	_check("proximity boundary: 300.0 counts as close, 301.0 does not",
+		Tuning.boss_proximity_active(Vector2(300.0, 0.0), Vector2.ZERO)
+			and not Tuning.boss_proximity_active(
+				Vector2(301.0, 0.0), Vector2.ZERO))
+
+	# (85) The HUD indicator follows the boss's proximity state:
+	# live inside the band, dark outside it.
+	game.player.global_position = boss6.global_position + Vector2(250.0, 0.0)
+	await _frames(2)
+	game._sync_hud()
+	var indicator_close: bool = boss6.proximity_active \
+		and game.hud.boss_bar_close_bonus
+	game.player.global_position = boss6.global_position + Vector2(500.0, 0.0)
+	await _frames(2)
+	game._sync_hud()
+	var indicator_far: bool = not boss6.proximity_active \
+		and not game.hud.boss_bar_close_bonus
+	_check("close-bonus HUD indicator is live inside the band and dark outside",
+		indicator_close and indicator_far)
+
+	# (86) A close 2-damage hit crossing the 66% threshold queues
+	# exactly one radial burst (the ring counter moves by one).
+	var boss7: Boss = await _start_boss_wave()
+	boss7.park_turrets()
+	_clear_hostiles()
+	boss7.hull_hp = 80 # one close hit crosses 79.2 (66% of 120)
+	game.player.global_position = boss7.global_position + Vector2(250.0, 0.0)
+	var radial_before: int = boss7.radial_count
+	await _shoot_hull(boss7, 1)
+	for i: int in range(150):
+		await _frames(1)
+		if boss7.radial_count > radial_before:
+			break
+	_check("close 2-damage threshold crossing queues exactly one radial (hp %d, rings %d -> %d)"
+		% [boss7.hull_hp, radial_before, boss7.radial_count],
+		boss7.hull_hp == 80 - Tuning.BOSS_PROXIMITY_DAMAGE
+			and boss7.radial_count == radial_before + 1)
 
 	print("HARNESS: %d/%d checks passed" % [_passed, _passed + _failed])
 	get_tree().quit(0 if _failed == 0 else 1)
