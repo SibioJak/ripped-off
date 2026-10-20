@@ -251,6 +251,13 @@ func _ready() -> void:
 	# (5) A kill bursts salvage shards; collecting one raises the multiplier.
 	var slot2: Vector2 = Tuning.slot_position(2)
 	var pirate2: Pirate = game.spawn_pirate("grabber", slot2 + Vector2(120.0, 0.0))
+	# Park the ship clear of the latch (setup only — the
+	# assertions below are unchanged): the pirate's latch stop
+	# sits 29px from where check (4) left the ship, outside the
+	# OLD 26px contact sum but inside the danmaku split's new
+	# 30px body sum, so an unparked ship now dies during this
+	# wait and cannot collect.
+	game.player.global_position = Vector2(120.0, 120.0)
 	for i: int in range(300):
 		await _frames(1)
 		if pirate2.held != null:
@@ -1824,6 +1831,210 @@ func _ready() -> void:
 	_check("a lone hunter never enters LEAVE on its own — it holds its hunt until killed",
 		not left108 and is_instance_valid(hunt108)
 			and hunt108.phase != Pirate.Phase.LEAVE)
+
+	# --- Danmaku split: body, hotspot, buzz geometry -------------
+	# The hull grew (body 13 -> 17: contact, clamp, muzzle) while
+	# enemy bullets judge a 5px hotspot, so the kill distance fell
+	# 17 -> 9. The bullet graze ring tightened 46 -> 30; the
+	# drag-pass window is contact-relative now (contact + 16,
+	# outer edge 46 for a standard pirate — where it always was).
+	var bullet_step: float = Tuning.ENEMY_BULLET_SPEED / 60.0
+
+	# (118) The hotspot kill ring: a bullet passing 12px abeam —
+	# inside the OLD 17px kill distance, outside the new 9px —
+	# cannot kill; it grazes and pays buzz. A bullet arriving at
+	# 8px kills through the real bullet path.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.player.global_position = Vector2(640.0, 400.0)
+	game.player.invincible_t = 0.0
+	game.player.clear_powerup()
+	game.multiplier = 1.0
+	var score118: int = game.score
+	var eb118a: EnemyBullet = game.spawn_enemy_bullet(
+		Vector2(652.0, 400.0), Vector2.DOWN)
+	await _frames(10)
+	var graze118: bool = game.player.alive and eb118a.buzzed \
+		and game.score > score118
+	game.spawn_enemy_bullet(
+		game.player.global_position + Vector2(8.0 + bullet_step, 0.0),
+		Vector2.LEFT)
+	for i: int in range(10):
+		await _frames(1)
+		if not game.player.alive:
+			break
+	_check("hotspot ring: a 12px pass grazes (buzz paid, ship alive); an 8px arrival kills (graze %s, alive %s)"
+		% [str(graze118), str(game.player.alive)],
+		graze118 and not game.player.alive)
+
+	# (119) The graze boundary: a bullet whose first step ends
+	# just inside the 30px ring pays buzz exactly once; one
+	# ending just outside pays nothing at all. (Spawns sit one
+	# step short of the measured arrival — the ring is sampled
+	# after each step, so arrival distance is what counts.)
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.player.global_position = Vector2(640.0, 400.0)
+	game.player.invincible_t = 99.0 # the boundary pays or not; nobody dies
+	game.multiplier = 1.0
+	game.mult_grace_t = 99.0
+	var score119: int = game.score
+	var eb119a: EnemyBullet = game.spawn_enemy_bullet(
+		game.player.global_position + Vector2(29.9 - bullet_step, 0.0),
+		Vector2.RIGHT)
+	for i: int in range(10):
+		await _frames(1)
+		if eb119a.buzzed:
+			break
+	var paid119: bool = eb119a.buzzed \
+		and game.score == score119 + Tuning.BUZZ_POINTS
+	game.enemy_bullets.erase(eb119a)
+	eb119a.queue_free()
+	var score119b: int = game.score
+	var mult119b: float = game.multiplier
+	var eb119b: EnemyBullet = game.spawn_enemy_bullet(
+		game.player.global_position + Vector2(30.1 - bullet_step, 0.0),
+		Vector2.RIGHT)
+	await _frames(10)
+	_check("graze boundary: a 29.9px arrival pays %d once; a 30.1px arrival pays nothing (paid %s, outside buzzed %s)"
+		% [Tuning.BUZZ_POINTS, str(paid119), str(eb119b.buzzed)],
+		paid119 and not eb119b.buzzed
+			and game.score == score119b
+			and absf(game.multiplier - mult119b) < 0.001)
+
+	# (120) Contact judges the BODY (17 + pirate 13 = 30). The
+	# pirate is re-pinned each frame at the test distance and
+	# steps straight along the pin axis toward its one available
+	# target — away from the ship in the far case, toward it in
+	# the near case — so the sampled distance stays on its own
+	# side of the line: held at 32 nothing ever resolves; held
+	# at 29 the contact lands and the parked ship dies.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	for c: Canister in game.canisters:
+		c.state = Canister.State.TOWED # unavailable as targets...
+	var loose120: Canister = game.canisters[0]
+	loose120.state = Canister.State.LOOSE # ...but one, far right
+	loose120.global_position = Vector2(900.0, 400.0)
+	game.player.global_position = Vector2(400.0, 400.0)
+	game.player.invincible_t = 0.0
+	var far120: Pirate = game.spawn_pirate("grabber",
+		Vector2(432.0, 400.0))
+	for i: int in range(150):
+		if is_instance_valid(far120):
+			far120.global_position = game.player.global_position \
+				+ Vector2(32.0, 0.0)
+		await _frames(1)
+	_check("contact body: a pirate held 32px off never touches the ship (alive %s)"
+		% str(game.player.alive),
+		game.player.alive and is_instance_valid(far120))
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	for c: Canister in game.canisters:
+		c.state = Canister.State.TOWED
+	var loose120b: Canister = game.canisters[0]
+	loose120b.state = Canister.State.LOOSE # the one target, far left
+	loose120b.global_position = Vector2(300.0, 400.0)
+	game.player.global_position = Vector2(400.0, 400.0)
+	game.player.invincible_t = 0.0
+	var near120: Pirate = game.spawn_pirate("grabber",
+		Vector2(429.0, 400.0))
+	var died120: bool = false
+	for i: int in range(150):
+		if is_instance_valid(near120):
+			near120.global_position = game.player.global_position \
+				+ Vector2(29.0, 0.0)
+		await _frames(1)
+		if not game.player.alive:
+			died120 = true
+			break
+	_check("contact body: a pirate held 29px off resolves contact and the parked ship dies",
+		died120)
+
+	# (121) The drag-pass window, contact-relative: (30, 46] for
+	# a standard pirate. Riding 38px abeam of a pirate mid-drag
+	# pays the pass buzz; riding at 50px pays nothing.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.player.invincible_t = 1000000000.0 # geometry must not kill
+	var slot121: Vector2 = Tuning.slot_position(0)
+	var dragger121: Pirate = game.spawn_pirate("grabber",
+		slot121 + Vector2(120.0, 0.0))
+	for i: int in range(300):
+		await _frames(1)
+		if dragger121.held != null:
+			break
+	game.multiplier = 1.0
+	game.mult_grace_t = 99.0
+	var score121: int = game.score
+	for i: int in range(120):
+		game.player.global_position = dragger121.global_position \
+			+ Vector2(38.0, 0.0)
+		await _frames(1)
+		if dragger121.buzzed_this_drag:
+			break
+	_check("drag-pass window: riding 38px abeam of a dragging pirate pays the pass buzz (score +%d)"
+		% (game.score - score121),
+		dragger121.buzzed_this_drag and game.score > score121)
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.player.invincible_t = 1000000000.0
+	var dragger121b: Pirate = game.spawn_pirate("grabber",
+		slot121 + Vector2(120.0, 0.0))
+	for i: int in range(300):
+		await _frames(1)
+		if dragger121b.held != null:
+			break
+	var saw_drag121b: bool = dragger121b.phase == Pirate.Phase.DRAG
+	for i: int in range(90):
+		game.player.global_position = dragger121b.global_position \
+			+ Vector2(50.0, 0.0)
+		await _frames(1)
+	_check("drag-pass window: riding 50px abeam pays nothing (was dragging %s, buzzed %s)"
+		% [str(saw_drag121b), str(dragger121b.buzzed_this_drag)],
+		saw_drag121b and not dragger121b.buzzed_this_drag)
+
+	# (122) Boss bullets judge the hotspot too: they fly the
+	# same EnemyBullet path (tinted), so a 12px pass off the
+	# ship grazes and an 8px arrival kills.
+	var boss122: Boss = await _start_boss_wave()
+	boss122.park_turrets()
+	_clear_hostiles()
+	game.player.global_position = Vector2(640.0, 320.0)
+	game.player.invincible_t = 0.0
+	game.player.clear_powerup()
+	var eb122a: EnemyBullet = game.spawn_enemy_bullet_tinted(
+		Vector2(652.0, 320.0), Vector2.DOWN,
+		Tuning.COLOR_BOSS_BULLET_CORE, Tuning.COLOR_BOSS_BULLET_RIM)
+	await _frames(10)
+	var graze122: bool = game.player.alive and eb122a.buzzed
+	game.spawn_enemy_bullet_tinted(
+		game.player.global_position + Vector2(8.0 + bullet_step, 0.0),
+		Vector2.LEFT,
+		Tuning.COLOR_BOSS_BULLET_CORE, Tuning.COLOR_BOSS_BULLET_RIM)
+	for i: int in range(10):
+		await _frames(1)
+		if not game.player.alive:
+			break
+	_check("boss bullets judge the hotspot: a 12px pass grazes, an 8px arrival kills (graze %s, alive %s)"
+		% [str(graze122), str(game.player.alive)],
+		graze122 and not game.player.alive)
+
+	# (123) The constants gate: the split's numbers and the
+	# kill distance they produce.
+	_check("danmaku constants: body 17, hotspot 5, graze ring 30, pass margin 16, kill distance 9",
+		Tuning.PLAYER_RADIUS == 17.0
+			and Tuning.PLAYER_HOTSPOT_RADIUS == 5.0
+			and Tuning.BUZZ_RADIUS == 30.0
+			and Tuning.BUZZ_PASS_MARGIN == 16.0
+			and Tuning.ENEMY_BULLET_RADIUS
+				+ Tuning.PLAYER_HOTSPOT_RADIUS == 9.0)
 
 	print("HARNESS: %d/%d checks passed" % [_passed, _passed + _failed])
 	get_tree().quit(0 if _failed == 0 else 1)
