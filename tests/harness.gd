@@ -10,6 +10,14 @@ var game: Main = null
 var _passed: int = 0
 var _failed: int = 0
 
+## M5 helper state: counts the Player's fired emissions (the
+## rapid-fire cadence and spread fan-out checks read it).
+var _fired_count: int = 0
+
+
+func _count_fired(_from: Vector2, _dir: Vector2) -> void:
+	_fired_count += 1
+
 
 func _check(label: String, ok: bool) -> void:
 	if ok:
@@ -146,6 +154,7 @@ func _ready() -> void:
 	var packed: PackedScene = load("res://scenes/main.tscn") as PackedScene
 	game = packed.instantiate() as Main
 	add_child(game)
+	game.player.fired.connect(_count_fired)
 	await _frames(3)
 	# Captured for M3 check (29): the music director's boot state.
 	var boot_music_title: bool = game.music != null \
@@ -1138,6 +1147,291 @@ func _ready() -> void:
 				+ Tuning.BOSS_PART_SCORE
 			and game.wave == 6 and game.bosses.is_empty()
 			and not game.boss_wave)
+
+	# --- M5: temp powerups ---------------------------------------
+	# Drops roll on Main's dedicated drop RNG (pinned where a
+	# check needs determinism). Kills drive the real kill_pirate
+	# path; collections fly the ship onto the pickup through the
+	# real physics loop; effects are measured on the real Player.
+
+	# (91) Random drops: pirate kills drop a pickup at the kill
+	# position; the one-on-field cap blocks further random drops
+	# until it is collected; after collection, drops roll again.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.reseed_drop_rng(424242)
+	game.player.global_position = Vector2(1100.0, 650.0)
+	var drop_pos: Vector2 = Vector2(200.0, 200.0)
+	var drop_seen: bool = false
+	var drop_at: Vector2 = Vector2.ZERO
+	var drop_type91: String = ""
+	for i: int in range(300):
+		var kp: Pirate = game.spawn_pirate("grabber", drop_pos)
+		game.kill_pirate(kp, true)
+		if game.pickups.size() > 0:
+			drop_seen = true
+			drop_at = game.pickups[0].global_position
+			drop_type91 = game.pickups[0].type_id
+			break
+	var cap_held91: bool = false
+	if drop_seen:
+		for i: int in range(60):
+			var kp2: Pirate = game.spawn_pirate("grabber", drop_pos)
+			game.kill_pirate(kp2, true)
+		cap_held91 = game.pickups.size() == 1
+		game.player.global_position = game.pickups[0].global_position
+		for i: int in range(30):
+			await _frames(1)
+			if game.pickups.is_empty():
+				break
+	var collected91: bool = game.pickups.is_empty() \
+		and game.player.powerup_id == drop_type91
+	var drop_again91: bool = false
+	if collected91:
+		for i: int in range(300):
+			var kp3: Pirate = game.spawn_pirate("grabber", drop_pos)
+			game.kill_pirate(kp3, true)
+			if game.pickups.size() > 0:
+				drop_again91 = true
+				break
+	_check("pirate kills drop a pickup at the kill point (type %s); the cap holds until collection; drops roll again after"
+		% drop_type91,
+		drop_seen and drop_at.distance_to(drop_pos) < 1.0
+			and PowerupDefs.has_def(drop_type91)
+			and cap_held91 and collected91 and drop_again91)
+
+	# (92) Boss death completion ALWAYS drops a powerup at the
+	# boss's position — the guarantee is exempt from the cap.
+	var boss11: Boss = await _start_boss_wave()
+	boss11.park_turrets()
+	_clear_hostiles()
+	game.spawn_powerup_drop(Vector2(200.0, 620.0), "rapid")
+	var cap_before92: int = game.pickups.size()
+	boss11.hull_hp = 1
+	var boss_pos92: Vector2 = boss11.global_position
+	await _shoot_hull(boss11, 1)
+	var drops_after92: int = cap_before92
+	var drop_near_boss92: bool = false
+	for i: int in range(300):
+		await _frames(1)
+		if game.bosses.is_empty():
+			drops_after92 = game.pickups.size()
+			for pk: Powerup in game.pickups:
+				if pk.global_position.distance_to(boss_pos92) < 60.0:
+					drop_near_boss92 = true
+			break
+	_check("boss death drops a guaranteed powerup even with the field cap satisfied (pickups %d -> %d)"
+		% [cap_before92, drops_after92],
+		cap_before92 == 1 and drops_after92 == cap_before92 + 1
+			and drop_near_boss92)
+
+	# (93) Collection activates the rolled type on the player;
+	# the HUD chip shows it, named, with a full timer fraction.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.spawn_powerup_drop(Vector2(400.0, 300.0), "overthrust")
+	game.player.global_position = Vector2(400.0, 300.0)
+	for i: int in range(30):
+		await _frames(1)
+		if game.player.powerup_id == "overthrust":
+			break
+	game._sync_hud()
+	_check("pickup collects on overlap: OVERTHRUST active, HUD chip named with a full timer (frac %.2f)"
+		% game.hud.powerup_frac,
+		game.player.powerup_id == "overthrust"
+			and game.pickups.is_empty()
+			and game.hud.powerup_id == "overthrust"
+			and game.hud.powerup_name == "OVERTHRUST"
+			and game.hud.powerup_frac >= 0.95)
+
+	# (94) A second pickup REPLACES the active powerup with a
+	# fresh full timer (same run, straight after check 93).
+	game.spawn_powerup_drop(game.player.global_position, "shield")
+	for i: int in range(30):
+		await _frames(1)
+		if game.player.powerup_id == "shield":
+			break
+	_check("collecting SHIELD replaces OVERTHRUST with a fresh full timer (frac %.2f)"
+		% game.player.powerup_fraction(),
+		game.player.powerup_id == "shield"
+			and game.player.powerup_fraction() >= 0.95
+			and game.pickups.is_empty())
+
+	# (95) Rapid: the effective interval halves, the fired-signal
+	# cadence over a fixed window roughly doubles, and expiry
+	# restores the base interval.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.player.global_position = Vector2(300.0, 400.0)
+	var base_interval95: float = game.player.effective_fire_interval()
+	_fired_count = 0
+	Input.action_press("aim_right")
+	await _frames(75) # 1.25s of held twin-stick fire
+	Input.action_release("aim_right")
+	var base_shots95: int = _fired_count
+	_fired_count = 0
+	game.player.activate_powerup("rapid")
+	var rapid_interval95: float = game.player.effective_fire_interval()
+	Input.action_press("aim_right")
+	await _frames(75)
+	Input.action_release("aim_right")
+	var rapid_shots95: int = _fired_count
+	game.player.powerup_t = 0.05 # run the timer out
+	await _frames(12)
+	_check("rapid fire: interval %.3f -> %.3f, cadence %d -> %d shots in 1.25s, expiry restores %.3f"
+		% [base_interval95, rapid_interval95, base_shots95,
+			rapid_shots95, game.player.effective_fire_interval()],
+		base_interval95 == Tuning.PLAYER_FIRE_INTERVAL
+			and rapid_interval95 == Tuning.PLAYER_FIRE_INTERVAL \
+				* Tuning.POWERUP_RAPID_FIRE_SCALE
+			and rapid_shots95 >= base_shots95 + 6
+			and game.player.powerup_id == ""
+			and game.player.effective_fire_interval()
+				== Tuning.PLAYER_FIRE_INTERVAL)
+	print("RAPID: base %d shots, rapid %d shots in 75 frames"
+		% [base_shots95, rapid_shots95])
+
+	# (96) Spread: ONE fired signal produces exactly 3 Main
+	# bullets, at -angle / 0 / +angle from facing.
+	game.clear_field()
+	_fired_count = 0
+	game.player.activate_powerup("spread")
+	game.player.fire_cd = 0.0
+	Input.action_press("aim_right")
+	await _frames(3)
+	Input.action_release("aim_right")
+	var angles96: Array[float] = []
+	for b: Bullet in game.bullets:
+		angles96.append(b.velocity.normalized().angle())
+	angles96.sort()
+	_check("spread fans one fired signal into exactly 3 bullets at -0.15 / 0 / +0.15 rad (fired %d, bullets %d)"
+		% [_fired_count, game.bullets.size()],
+		_fired_count == 1 and game.bullets.size() == 3
+			and absf(angles96[0] + Tuning.POWERUP_SPREAD_ANGLE) < 0.01
+			and absf(angles96[1]) < 0.01
+			and absf(angles96[2] - Tuning.POWERUP_SPREAD_ANGLE) < 0.01)
+
+	# (97) Overthrust: the speed cap measures 350 x 1.35 = 472.5
+	# in real movement; expiry returns the ship to the 350 cap.
+	game.player.clear_powerup()
+	game.player.activate_powerup("overthrust")
+	game.player.global_position = Vector2(200.0, 400.0)
+	game.player.velocity = Vector2.ZERO
+	var cap97: float = game.player.move_speed_cap()
+	Input.action_press("move_right")
+	await _frames(60) # 1s: accel 3200 reaches the cap in ~0.15s
+	var speed97: float = game.player.speed_now()
+	game.player.powerup_t = 0.05 # run the timer out
+	await _frames(30) # the drive settles onto the base cap
+	var speed_after97: float = game.player.speed_now()
+	Input.action_release("move_right")
+	_check("overthrust: cap %.1f, measured speed %.1f, settles to %.1f after expiry"
+		% [cap97, speed97, speed_after97],
+		absf(cap97 - Tuning.PLAYER_SPEED
+				* Tuning.POWERUP_OVERTHRUST_SPEED_SCALE) < 0.01
+			and absf(speed97 - 472.5) < 2.0
+			and game.player.move_speed_cap() == Tuning.PLAYER_SPEED
+			and speed_after97 <= Tuning.PLAYER_SPEED + 2.0)
+
+	# (98) Shield absorb, through BOTH kill paths. The lethal
+	# bullets are pre-flagged buzzed so the graze payout cannot
+	# blur the "no death costs landed" assertions (multiplier
+	# and rank pinned at known values, grace held open).
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.player.global_position = Vector2(300.0, 300.0)
+	game.player.invincible_t = 0.0
+	game.multiplier = 3.0
+	game.mult_grace_t = 99.0
+	game.rank = 0.5
+	game.player.activate_powerup("shield")
+	var eb1: EnemyBullet = game.spawn_enemy_bullet(
+		game.player.global_position + Vector2(-30.0, 0.0), Vector2.RIGHT)
+	eb1.buzzed = true
+	for i: int in range(40):
+		await _frames(1)
+		if game.player.powerup_id == "":
+			break
+	var absorbed98: bool = game.player.alive \
+		and game.player.powerup_id == "" \
+		and game.player.is_invincible() \
+		and absf(game.multiplier - 3.0) < 0.001 \
+		and absf(game.rank - 0.5) < 0.001
+	await _frames(75) # the 1s post-absorb grace runs out for real
+	var eb2: EnemyBullet = game.spawn_enemy_bullet(
+		game.player.global_position + Vector2(-30.0, 0.0), Vector2.RIGHT)
+	eb2.buzzed = true
+	for i: int in range(40):
+		await _frames(1)
+		if not game.player.alive:
+			break
+	var died98: bool = not game.player.alive \
+		and absf(game.multiplier - 1.5) < 0.001
+	for i: int in range(200):
+		await _frames(1)
+		if game.player.alive:
+			break
+	game.player.invincible_t = 0.0
+	game.multiplier = 3.0
+	game.mult_grace_t = 99.0
+	game.rank = 0.5
+	game.player.activate_powerup("shield")
+	var toucher98: Pirate = game.spawn_pirate("grabber",
+		game.player.global_position + Vector2(8.0, 0.0))
+	for i: int in range(240):
+		await _frames(1)
+		if game.player.powerup_id == "":
+			break
+	var contact98: bool = game.player.alive \
+		and game.player.powerup_id == "" \
+		and absf(game.multiplier - 3.0) < 0.001 \
+		and absf(game.rank - 0.5) < 0.001
+	_check("shield absorbs a lethal bullet and a contact hit with no death costs; the unshielded bullet kills (toucher valid: %s)"
+		% str(is_instance_valid(toucher98)),
+		absorbed98 and died98 and contact98)
+
+	# (99) Death clears the active powerup; respawn restores none.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.player.activate_powerup("rapid")
+	game.player.invincible_t = 0.0
+	game.kill_player()
+	var cleared99: bool = not game.player.alive \
+		and game.player.powerup_id == ""
+	for i: int in range(200):
+		await _frames(1)
+		if game.player.alive:
+			break
+	_check("death clears the active powerup and respawn restores none",
+		cleared99 and game.player.alive
+			and game.player.powerup_id == "")
+
+	# (100) An uncollected pickup despawns at its lifetime, and
+	# the drop-type sequence reproduces under a pinned seed.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.spawn_powerup_drop(Vector2(200.0, 200.0), "rapid")
+	game.player.global_position = Vector2(1100.0, 650.0)
+	for i: int in range(620):
+		await _frames(1)
+		if game.pickups.is_empty():
+			break
+	var despawned100: bool = game.pickups.is_empty()
+	game.reseed_drop_rng(20261020)
+	var seq_a: Array[String] = [game.roll_powerup_type(),
+		game.roll_powerup_type(), game.roll_powerup_type()]
+	game.reseed_drop_rng(20261020)
+	var seq_b: Array[String] = [game.roll_powerup_type(),
+		game.roll_powerup_type(), game.roll_powerup_type()]
+	_check("uncollected pickup despawns after %.0fs; pinned seed reproduces the type sequence %s"
+		% [Tuning.POWERUP_LIFETIME, str(seq_a)],
+		despawned100 and seq_a == seq_b)
 
 	print("HARNESS: %d/%d checks passed" % [_passed, _passed + _failed])
 	get_tree().quit(0 if _failed == 0 else 1)
