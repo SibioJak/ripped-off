@@ -19,6 +19,28 @@ func _count_fired(_from: Vector2, _dir: Vector2) -> void:
 	_fired_count += 1
 
 
+## M6 helper state: the pirate whose fired emissions the lead
+## check inspects (its step context is the exact input the shot
+## was computed from), and the types a driven director deals
+## (the mix and alive-cap checks read them).
+var _watch_pirate: Pirate = null
+var _lead_shots: Array[Dictionary] = []
+var _dealt_types: Array[String] = []
+
+
+func _record_lead(from: Vector2, dir: Vector2) -> void:
+	if _watch_pirate == null:
+		return
+	_lead_shots.append({
+		"from": from, "dir": dir,
+		"ppos": _watch_pirate.player_pos,
+		"pvel": _watch_pirate.player_vel})
+
+
+func _record_spawn(type_name: String, _pos: Vector2) -> void:
+	_dealt_types.append(type_name)
+
+
 func _check(label: String, ok: bool) -> void:
 	if ok:
 		_passed += 1
@@ -1432,6 +1454,376 @@ func _ready() -> void:
 	_check("uncollected pickup despawns after %.0fs; pinned seed reproduces the type sequence %s"
 		% [Tuning.POWERUP_LIFETIME, str(seq_a)],
 		despawned100 and seq_a == seq_b)
+
+	# --- M6: the hunter class + GW-hard early pressure -----------
+	# The direct-challenge class: it hunts the player, never the
+	# canisters, and leads its shots. The retune numbers are read
+	# through the Tuning constants and the director's own helpers
+	# at the waves the spec names.
+
+	# (101) The def exists as specced, and the director's dealing
+	# path keeps waves 1-2 hunter-free while wave 3 deals hunters
+	# as a minority share.
+	var hdef: Dictionary = EnemyDefs.get_def("hunter")
+	_check("hunter def: role hunter, speed 215, score 175, shards 5, radius 13, fire 2.6",
+		String(hdef.get("role", "")) == "hunter"
+			and float(hdef.get("speed", 0.0)) == 215.0
+			and int(hdef.get("score", 0)) == 175
+			and int(hdef.get("shards", 0)) == 5
+			and float(hdef.get("radius", 0.0)) == 13.0
+			and float(hdef.get("fire_interval", 0.0)) == 2.6)
+	var dd: SpawnDirector = SpawnDirector.new()
+	seed(777001)
+	var early_hunters: int = 0
+	var early_waves: Array[int] = [1, 2]
+	for w: int in early_waves:
+		dd.start_wave(w)
+		for i: int in range(200):
+			if dd.pick_type(0) == "hunter":
+				early_hunters += 1
+	dd.start_wave(3)
+	var deal_counts: Dictionary = {"hunter": 0, "gunner": 0, "grabber": 0}
+	for i: int in range(400):
+		var dealt_t: String = dd.pick_type(0)
+		deal_counts[dealt_t] = int(deal_counts.get(dealt_t, 0)) + 1
+	dd.queue_free()
+	_check("director deals zero hunters on waves 1-2; wave 3 deals hunters as a minority (%s)"
+		% str(deal_counts),
+		early_hunters == 0
+			and int(deal_counts.get("hunter", 0)) > 0
+			and int(deal_counts.get("hunter", 0))
+				< int(deal_counts.get("grabber", 0))
+			and int(deal_counts.get("hunter", 0)) < 100)
+
+	# (102) The alive cap is a hard gate: drive a wave-3 director
+	# stepping manually, non-hunters "dying" the instant they are
+	# dealt (so total alive == hunters alive). Hunters accumulate
+	# to the cap and the dealing then produces no more of them,
+	# however many spawn slots the quota still holds.
+	var dcap: SpawnDirector = SpawnDirector.new()
+	dcap.spawn_requested.connect(_record_spawn)
+	_dealt_types.clear()
+	seed(424243)
+	dcap.start_wave(3)
+	var alive_h102: int = 0
+	var max_h102: int = 0
+	var dealt_h102: int = 0
+	var read102: int = 0
+	var steps102: int = 0
+	while not dcap.quota_exhausted() and steps102 < 20000:
+		dcap.step(1.0 / 60.0, alive_h102, Vector2(640.0, 700.0),
+			0.25, alive_h102)
+		steps102 += 1
+		while read102 < _dealt_types.size():
+			if _dealt_types[read102] == "hunter":
+				alive_h102 += 1
+				dealt_h102 += 1
+			read102 += 1
+		max_h102 = maxi(max_h102, alive_h102)
+	var drained102: bool = dcap.quota_exhausted()
+	dcap.queue_free()
+	_check("hunter alive cap is a hard gate: driven wave-3 field peaks at %d alive, %d dealt of a %d quota"
+		% [max_h102, dealt_h102,
+			Tuning.WAVE_BASE_QUOTA + Tuning.WAVE_QUOTA_PER_WAVE * 3],
+		drained102 and max_h102 == Tuning.HUNTER_ALIVE_CAP
+			and dealt_h102 == Tuning.HUNTER_ALIVE_CAP)
+
+	# (103) A hunter parked beside a loose canister for 5s never
+	# latches, drags or holds it: the canister's state and holder
+	# never change, and the hunter never enters DRAG.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.player.global_position = Vector2(1150.0, 120.0)
+	game.player.invincible_t = 1000000000.0
+	var can103: Canister = game.canisters[0]
+	can103.set_loose(Vector2.ZERO)
+	can103.global_position = Vector2(300.0, 620.0)
+	var hunt103: Pirate = game.spawn_pirate("hunter", Vector2(330.0, 620.0))
+	var stole103: bool = false
+	for i: int in range(300):
+		await _frames(1)
+		if not is_instance_valid(hunt103):
+			stole103 = true
+			break
+		if hunt103.phase == Pirate.Phase.DRAG or hunt103.held != null \
+				or can103.holder != null \
+				or can103.state != Canister.State.LOOSE:
+			stole103 = true
+			break
+	_check("hunter beside a loose canister never latches, drags or holds it (5s watch)",
+		not stole103 and is_instance_valid(hunt103)
+			and can103.state == Canister.State.LOOSE
+			and can103.holder == null)
+
+	# (104) Pursuit: a hunter spawned across the arena from a
+	# stationary player closes into the orbit band and holds it —
+	# it neither parks on the player nor drifts away.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.player.global_position = Vector2(300.0, 400.0)
+	game.player.invincible_t = 1000000000.0
+	var hunt104: Pirate = game.spawn_pirate("hunter", Vector2(1120.0, 130.0))
+	var end_dist104: float = -1.0
+	var min_late104: float = INF
+	var max_late104: float = 0.0
+	for i: int in range(600):
+		await _frames(1)
+		if not is_instance_valid(hunt104):
+			break
+		if i >= 480:
+			var d104: float = hunt104.global_position.distance_to(
+				game.player.global_position)
+			min_late104 = minf(min_late104, d104)
+			max_late104 = maxf(max_late104, d104)
+			end_dist104 = d104
+	_check("hunter closes across the arena and holds the orbit band (end %.0f, late range %.0f-%.0f)"
+		% [end_dist104, min_late104, max_late104],
+		end_dist104 >= 110.0 and end_dist104 <= 190.0
+			and min_late104 > 60.0 and max_late104 < 230.0)
+
+	# (105) Lead fire: the shot is computed from the player's
+	# position AND velocity, recorded off the shooter's own step
+	# context at the instant of the fired signal. Nothing fires
+	# in the entry telegraph, a charge always precedes the shot,
+	# and nothing fires while the player is dead.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.rank = 0.0
+	game.player.global_position = Vector2(640.0, 620.0)
+	game.player.invincible_t = 1000000000.0
+	var hunt105: Pirate = game.spawn_pirate("hunter", Vector2(640.0, 180.0))
+	_watch_pirate = hunt105
+	_lead_shots.clear()
+	hunt105.fired.connect(_record_lead)
+	for i: int in range(48): # the 0.8s entry telegraph
+		await _frames(1)
+	var telegraph_shots105: int = _lead_shots.size()
+	Input.action_press("move_right") # steady velocity (350, 0) once at cap
+	var saw_charge105: bool = false
+	for i: int in range(900):
+		await _frames(1)
+		if is_instance_valid(hunt105) and hunt105.charge_frac() >= 0.0:
+			saw_charge105 = true
+		if _lead_shots.size() > 0:
+			break
+	Input.action_release("move_right")
+	var lead_ok105: bool = false
+	var lead_err105: float = 0.0
+	var nolead_gap105: float = 0.0
+	var shot_vel105: float = 0.0
+	if _lead_shots.size() > 0:
+		var s105: Dictionary = _lead_shots[0] as Dictionary
+		var from105: Vector2 = s105["from"] as Vector2
+		var dir105: Vector2 = s105["dir"] as Vector2
+		var ppos105: Vector2 = s105["ppos"] as Vector2
+		var pvel105: Vector2 = s105["pvel"] as Vector2
+		shot_vel105 = pvel105.length()
+		var tof105: float = from105.distance_to(ppos105) \
+			/ Tuning.ENEMY_BULLET_SPEED
+		var lead_dir105: Vector2 = (ppos105
+			+ pvel105 * tof105 * Tuning.HUNTER_LEAD_FACTOR
+			- from105).normalized()
+		var nolead_dir105: Vector2 = (ppos105 - from105).normalized()
+		lead_err105 = absf(dir105.angle_to(lead_dir105))
+		nolead_gap105 = absf(dir105.angle_to(nolead_dir105))
+		lead_ok105 = lead_err105 < 0.05 and nolead_gap105 > 0.1
+	_check("lead fire: %d shots in the telegraph, a charge precedes the shot, moving shot matches the lead point (err %.3f rad, no-lead gap %.3f, player speed %.0f)"
+		% [telegraph_shots105, lead_err105, nolead_gap105, shot_vel105],
+		telegraph_shots105 == 0 and saw_charge105
+			and _lead_shots.size() > 0 and shot_vel105 > 300.0
+			and lead_ok105)
+	# Stationary player: the lead point IS the ship — the shot
+	# aims at the player itself.
+	var mark105: int = _lead_shots.size()
+	game.player.global_position = Vector2(350.0, 300.0)
+	for i: int in range(600):
+		await _frames(1)
+		if _lead_shots.size() > mark105:
+			break
+	var still_ok105: bool = false
+	var still_err105: float = 0.0
+	var still_vel105: float = -1.0
+	if _lead_shots.size() > mark105:
+		var s105b: Dictionary = _lead_shots[mark105] as Dictionary
+		var from105b: Vector2 = s105b["from"] as Vector2
+		var dir105b: Vector2 = s105b["dir"] as Vector2
+		var ppos105b: Vector2 = s105b["ppos"] as Vector2
+		var pvel105b: Vector2 = s105b["pvel"] as Vector2
+		still_vel105 = pvel105b.length()
+		still_err105 = absf(dir105b.angle_to(
+			(ppos105b - from105b).normalized()))
+		still_ok105 = still_vel105 < 20.0 and still_err105 < 0.05
+	_check("stationary player: the hunter's shot aims at the ship itself (err %.3f rad, player speed %.0f)"
+		% [still_err105, still_vel105], still_ok105)
+	# Dead player: the fire cycle halts outright.
+	game.player.invincible_t = 0.0
+	game.kill_player()
+	game.player.respawn_t = 100000.0 # stay down for the watch
+	var dead_mark105: int = _lead_shots.size()
+	for i: int in range(300):
+		await _frames(1)
+	_check("no hunter fire while the player is dead (%d shots across a 5s watch)"
+		% (_lead_shots.size() - dead_mark105),
+		_lead_shots.size() == dead_mark105 and not game.player.alive)
+	_watch_pirate = null
+
+	# (106) The retune, read through the Tuning constants and
+	# the director's own gates at waves 1, 5 and 10.
+	var dq: SpawnDirector = SpawnDirector.new()
+	dq.spawn_requested.connect(_record_spawn)
+	dq.start_wave(1)
+	var quota1: int = dq.quota_left
+	dq.start_wave(5)
+	var quota5: int = dq.quota_left
+	dq.start_wave(10)
+	var quota10: int = dq.quota_left
+	_check("retune: wave quotas are 9 / 21 / 36 at waves 1 / 5 / 10 (got %d / %d / %d)"
+		% [quota1, quota5, quota10],
+		quota1 == 9 and quota5 == 21 and quota10 == 36)
+	# Alive cap through the step gate: at the cap nothing spawns,
+	# one below it a spawn lands. Wave 1 rank 0: cap 4. Wave 10
+	# rank 1: min(4 + 9 + 3, 9 + 3) = 12.
+	dq.start_wave(1)
+	_dealt_types.clear()
+	dq.step(1.0, 4, Vector2.ZERO, 0.0, 0)
+	var gated_w1: bool = _dealt_types.is_empty()
+	dq.step(1.0, 3, Vector2.ZERO, 0.0, 0)
+	var spawned_w1: bool = _dealt_types.size() == 1
+	dq.start_wave(10)
+	_dealt_types.clear()
+	dq.step(1.0, 12, Vector2.ZERO, 1.0, 0)
+	var gated_w10: bool = _dealt_types.is_empty()
+	dq.step(1.0, 11, Vector2.ZERO, 1.0, 0)
+	var spawned_w10: bool = _dealt_types.size() == 1
+	_check("retune: alive caps gate the director (wave 1 rank 0 cap 4; wave 10 rank 1 cap 12)",
+		gated_w1 and spawned_w1 and gated_w10 and spawned_w10)
+	_check("retune: spawn interval is 0.85 at rank 0 and x0.55 at rank 1",
+		Tuning.SPAWN_INTERVAL == 0.85
+			and absf(Tuning.rank_spawn_interval(
+				Tuning.SPAWN_INTERVAL, 0.0) - 0.85) < 0.001
+			and absf(Tuning.rank_spawn_interval(
+				Tuning.SPAWN_INTERVAL, 1.0)
+				- 0.85 * Tuning.SPAWN_INTERVAL_MIN_FRAC) < 0.001)
+	_check("retune: rank start 0.25; floors 0.15 / 0.29 / 0.465 at waves 1 / 5 / 10, capped 0.6",
+		Tuning.RANK_START == 0.25
+			and absf(Tuning.rank_floor_for_wave(1) - 0.15) < 0.001
+			and absf(Tuning.rank_floor_for_wave(5) - 0.29) < 0.001
+			and absf(Tuning.rank_floor_for_wave(10) - 0.465) < 0.001
+			and absf(Tuning.rank_floor_for_wave(100) - 0.6) < 0.001)
+	dq.start_wave(2)
+	var gs2: float = dq.gunner_share()
+	dq.start_wave(5)
+	var gs5: float = dq.gunner_share()
+	dq.start_wave(10)
+	var gs10: float = dq.gunner_share()
+	var hs10: float = dq.hunter_share()
+	var hc10: int = dq.hunter_alive_cap()
+	dq.start_wave(3)
+	var hs3: float = dq.hunter_share()
+	var hc3: int = dq.hunter_alive_cap()
+	dq.start_wave(7)
+	var hc7: int = dq.hunter_alive_cap()
+	dq.queue_free()
+	_check("retune: gunner share 0.25 / 0.40 / 0.60 at waves 2 / 5 / 10; hunter share 0.12 (w3), 0.19 (w10); hunter caps 2 (w3), 3 (w7+)",
+		absf(gs2 - 0.25) < 0.001 and absf(gs5 - 0.40) < 0.001
+			and absf(gs10 - 0.60) < 0.001
+			and absf(hs3 - 0.12) < 0.001 and absf(hs10 - 0.19) < 0.001
+			and hc3 == 2 and hc7 == 3 and hc10 == 3)
+
+	# (107) Hunter kill flow, through Main's standard paths: a
+	# bullet kill pays 175 x multiplier and bursts 5 shards; a
+	# ram kill at/above the ram threshold resolves the same way
+	# and the player flies on.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.multiplier = 1.0
+	game.mult_grace_t = 99.0
+	game.player.global_position = Vector2(1100.0, 650.0)
+	game.player.invincible_t = 1000000000.0
+	var hunt107: Pirate = game.spawn_pirate("hunter", Vector2(400.0, 300.0))
+	for i: int in range(120):
+		await _frames(1)
+		if not is_instance_valid(hunt107) \
+				or hunt107.phase != Pirate.Phase.TELEGRAPH:
+			break
+	var score107: int = game.score
+	if is_instance_valid(hunt107):
+		game.spawn_bullet(hunt107.global_position, Vector2.RIGHT)
+	for i: int in range(30):
+		await _frames(1)
+		if not is_instance_valid(hunt107):
+			break
+	_check("hunter bullet kill pays 175 and bursts 5 shards (score +%d, shards %d)"
+		% [game.score - score107, game.shards.size()],
+		not is_instance_valid(hunt107)
+			and game.score - score107 == 175
+			and game.shards.size() == 5)
+	var hunt107b: Pirate = game.spawn_pirate("hunter", Vector2(700.0, 300.0))
+	for i: int in range(120):
+		await _frames(1)
+		if not is_instance_valid(hunt107b) \
+				or hunt107b.phase != Pirate.Phase.TELEGRAPH:
+			break
+	game.player.invincible_t = 0.0 # contact must be able to resolve
+	var rammed107: bool = false
+	for i: int in range(90):
+		if not is_instance_valid(hunt107b):
+			rammed107 = true
+			break
+		game.player.global_position = hunt107b.global_position \
+			+ Vector2(-22.0, 0.0)
+		game.player.velocity = Vector2(320.0, 0.0)
+		await _frames(1)
+		if not is_instance_valid(hunt107b):
+			rammed107 = true
+			break
+	_check("hunter rammed at speed dies through the standard contact path; the player flies on",
+		rammed107 and game.player.alive)
+
+	# (108) Wave flow with hunters: a hand-dealt field containing
+	# hunters clears and advances once every pirate is dead (no
+	# soft-lock), and a lone hunter never enters LEAVE on its
+	# own — killing it is its only exit, exactly the gunner's end
+	# path (check 37). Shooters have no LEAVE path, so the exit
+	# watchdog has nothing to cover for either class.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.director.start_wave(3) # composition flavour; Main's wave is its own
+	game.director.active = false
+	game.director.quota_left = 0
+	game.spawn_pirate("hunter", Vector2(200.0, 200.0))
+	game.spawn_pirate("hunter", Vector2(1080.0, 200.0))
+	game.spawn_pirate("grabber", Vector2(640.0, 120.0))
+	game.player.global_position = Vector2(640.0, 700.0)
+	game.player.invincible_t = 1000000000.0
+	var field108: Array[Pirate] = game.pirates.duplicate()
+	for p: Pirate in field108:
+		game.kill_pirate(p, false)
+	await _frames(10)
+	_check("a wave containing hunters clears and advances once every pirate is killed (wave %d)"
+		% game.wave,
+		game.wave == 2 and game.pirates.is_empty())
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.player.global_position = Vector2(640.0, 700.0)
+	game.player.invincible_t = 1000000000.0
+	var hunt108: Pirate = game.spawn_pirate("hunter", Vector2(640.0, 150.0))
+	var left108: bool = false
+	for i: int in range(360):
+		await _frames(1)
+		if not is_instance_valid(hunt108) \
+				or hunt108.phase == Pirate.Phase.LEAVE:
+			left108 = true
+			break
+	_check("a lone hunter never enters LEAVE on its own — it holds its hunt until killed",
+		not left108 and is_instance_valid(hunt108)
+			and hunt108.phase != Pirate.Phase.LEAVE)
 
 	print("HARNESS: %d/%d checks passed" % [_passed, _passed + _failed])
 	get_tree().quit(0 if _failed == 0 else 1)
