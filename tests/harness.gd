@@ -41,6 +41,20 @@ func _record_spawn(type_name: String, _pos: Vector2) -> void:
 	_dealt_types.append(type_name)
 
 
+## M7 helper state: a staged pirate's fired count and conversion
+## stage emissions (the timeline-integrity check reads them).
+var _conv_shots: int = 0
+var _conv_stages: Array[int] = []
+
+
+func _count_conv_shot(_from: Vector2, _dir: Vector2) -> void:
+	_conv_shots += 1
+
+
+func _record_conv_stage(stage: int) -> void:
+	_conv_stages.append(stage)
+
+
 func _check(label: String, ok: bool) -> void:
 	if ok:
 		_passed += 1
@@ -337,6 +351,15 @@ func _ready() -> void:
 
 	# (16) The gunner's shot follows its charge telegraph; nothing
 	# fires during the entry telegraph or mid-charge.
+	# M7 staging note: a FRESH run starts this check. Check (15)
+	# left the director's quota drained to zero with a thief
+	# having existed — precisely a live conversion trigger state
+	# (quota-spent + dead air), and a lone gunner parked here for
+	# seconds would now legitimately convert mid-check and stop
+	# firing. The fresh run resets the per-wave conversion state
+	# (and the quota); the assertions below are untouched.
+	game.start_run()
+	game.director.active = false
 	game.clear_field()
 	var g: Pirate = game.spawn_pirate("gunner",
 		Tuning.depot_center() + Vector2(300.0, 0.0))
@@ -2035,6 +2058,340 @@ func _ready() -> void:
 			and Tuning.BUZZ_PASS_MARGIN == 16.0
 			and Tuning.ENEMY_BULLET_RADIUS
 				+ Tuning.PLAYER_HOTSPOT_RADIUS == 9.0)
+
+	# --- M7: conversion, with the transformer reshape --------------
+	# A gunner whose getters are gone rebuilds itself into a
+	# thief. Staging controls the trigger state precisely (quota
+	# live vs spent, a thief having existed or not); kills go
+	# through Main's real paths; the reshape's timeline, colour
+	# and role flip are read off the pirate itself.
+
+	# (126) Dead-air trigger: a thief worked this wave, then only
+	# a gunner remains (quota NOT exhausted). After the dead-air
+	# window the gunner starts reshaping — and it is the only one.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.player.global_position = Vector2(120.0, 680.0)
+	game.player.invincible_t = 1000000000.0
+	var g126: Pirate = game.spawn_pirate("gunner",
+		Tuning.depot_center() + Vector2(300.0, 0.0))
+	await _frames(70) # the gunner is at its post (HOLD)
+	var t126: Pirate = game.spawn_pirate("grabber",
+		Tuning.slot_position(2) + Vector2(150.0, 0.0))
+	await _frames(10) # a working thief exists; the wave flag sets
+	game.kill_pirate(t126, false)
+	var frames126: int = -1
+	for i: int in range(280):
+		await _frames(1)
+		if g126.is_converting():
+			frames126 = i + 1
+			break
+	var converting126: int = 0
+	for p: Pirate in game.pirates:
+		if p.is_converting():
+			converting126 += 1
+	_check("dead-air trigger: conversion starts %d frames after the last thief died (window 130-190, dead air 150); exactly one pirate converts"
+		% frames126,
+		frames126 >= 130 and frames126 <= 190 and converting126 == 1)
+
+	# (127) Quota-spent trigger: no thief has EVER existed this
+	# wave, but the quota is spent and a gunner holds the field —
+	# it converts promptly (the quota delay plus its entry
+	# telegraph), which neither dead air (no thief ever) nor the
+	# 8s backstop can explain.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.director.quota_left = 0 # the quota is spent from the outset
+	game.player.global_position = Vector2(120.0, 680.0)
+	game.player.invincible_t = 1000000000.0
+	var g127: Pirate = game.spawn_pirate("gunner",
+		Tuning.depot_center() + Vector2(-300.0, 0.0))
+	var start127: int = -1
+	for i: int in range(200):
+		await _frames(1)
+		if g127.is_converting():
+			start127 = i + 1
+			break
+	_check("quota-spent trigger: a getter-free wave converts its gunner promptly (frame %d, window 41-160) with no thief ever on the field"
+		% start127,
+		start127 >= 41 and start127 <= 160
+			and not game._wave_had_thief)
+
+	# (128) Timeline integrity: a reshaping pirate parked beside a
+	# slotted canister fires ZERO shots and cannot latch; halfway
+	# through it is still a shooter, mid-cross-fade; at the end
+	# it is a thief wearing the grabber colour EXACTLY, and the
+	# stage signals arrived 1, 2, 3 in order.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.director.quota_left = 0
+	game.player.global_position = Vector2(120.0, 680.0)
+	game.player.invincible_t = 1000000000.0
+	var can128: Canister = game.canisters[0]
+	var g128: Pirate = game.spawn_pirate("gunner",
+		can128.global_position + Vector2(45.0, 0.0))
+	_conv_shots = 0
+	_conv_stages.clear()
+	g128.fired.connect(_count_conv_shot)
+	g128.convert_stage.connect(_record_conv_stage)
+	for i: int in range(200):
+		await _frames(1)
+		if g128.is_converting():
+			break
+	var started128: bool = g128.is_converting()
+	var shots_at_start128: int = _conv_shots
+	var latched128: bool = false
+	var role_mid128: String = ""
+	var color_mid128: Color = Color.BLACK
+	var frames128: int = 0
+	while g128.is_converting() and frames128 < 200:
+		await _frames(1)
+		frames128 += 1
+		if g128.held != null or can128.state == Canister.State.DRAGGING:
+			latched128 = true
+		if frames128 == 27: # ~halfway through the 0.9s reshape
+			role_mid128 = g128.current_role()
+			color_mid128 = g128.draw_color
+	var gunner_def128: Dictionary = EnemyDefs.get_def("gunner")
+	var gunner_col128: Color = gunner_def128["color"] as Color
+	var grabber_def128: Dictionary = EnemyDefs.get_def("grabber")
+	var grabber_col128: Color = grabber_def128["color"] as Color
+	_check("conversion timeline: no shots, no latch mid-reshape; shooter at halfway, mid-fade; thief in exact grabber coral at the end; stages 1-2-3 in order (stages %s)"
+		% str(_conv_stages),
+		started128 and not latched128
+			and _conv_shots == shots_at_start128
+			and role_mid128 == "shooter"
+			and color_mid128 != gunner_col128
+			and color_mid128 != grabber_col128
+			and g128.current_role() == "thief"
+			and g128.draw_color == grabber_col128
+			and _conv_stages.size() == 3
+			and _conv_stages[0] == 1 and _conv_stages[1] == 2
+			and _conv_stages[2] == 3)
+
+	# (129) A convert completes a steal (the Rip-Off 2 orbit-
+	# stall guard): from a mid-field conversion it must latch a
+	# canister and reach DRAG inside a bounded time, then haul
+	# it out and leave by the normal path.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.director.quota_left = 0
+	game.player.global_position = Vector2(120.0, 680.0)
+	game.player.invincible_t = 1000000000.0
+	var g129: Pirate = game.spawn_pirate("gunner", Vector2(1100.0, 150.0))
+	for i: int in range(200):
+		await _frames(1)
+		if g129.is_converting():
+			break
+	for i: int in range(200):
+		await _frames(1)
+		if not g129.is_converting():
+			break
+	var converted129: bool = g129.current_role() == "thief"
+	var drag_frames129: int = -1
+	var held129: Canister = null
+	for i: int in range(480): # 8s bound from conversion completion
+		await _frames(1)
+		if not is_instance_valid(g129):
+			break
+		if g129.phase == Pirate.Phase.DRAG:
+			drag_frames129 = i + 1
+			held129 = g129.held
+			break
+	var exited129: bool = false
+	if held129 != null:
+		for i: int in range(900):
+			await _frames(1)
+			if not is_instance_valid(g129) or not game.pirates.has(g129):
+				exited129 = held129.state == Canister.State.GONE
+				break
+	_check("convert completes a steal: DRAG reached %d frames after the reshape (bound 480), canister hauled out GONE and the convert leaves"
+		% drag_frames129,
+		converted129 and drag_frames129 > 0 and exited129)
+
+	# (130) Death mid-conversion: a bullet kills the reshaping
+	# gunner — it pays as a GUNNER (150 x multiplier), bursts its
+	# 4 gunner shards, and never flips posthumously.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.director.quota_left = 0
+	game.player.global_position = Vector2(120.0, 680.0)
+	game.player.invincible_t = 1000000000.0
+	game.multiplier = 2.0
+	game.mult_grace_t = 99.0 # pin the multiplier (checks 98/119 precedent)
+	# A hunter bystander keeps the field non-empty through the
+	# post-kill wait: with the quota spent, an emptied field
+	# would legitimately advance the wave and deal fresh pirates
+	# (grabbers among them) into the post assertions. A hunter
+	# never converts and is never a thief, so it changes nothing
+	# else the check measures.
+	game.spawn_pirate("hunter", Vector2(200.0, 150.0))
+	var g130: Pirate = game.spawn_pirate("gunner",
+		Tuning.depot_center() + Vector2(300.0, 0.0))
+	for i: int in range(200):
+		await _frames(1)
+		if g130.is_converting():
+			break
+	await _frames(15) # ~0.25s in: mid-reshape
+	var mid130: bool = g130.is_converting()
+	var score130: int = game.score
+	var shards130: int = game.shards.size()
+	game.spawn_bullet(g130.global_position + Vector2(-30.0, 0.0),
+		Vector2.RIGHT)
+	for i: int in range(30):
+		await _frames(1)
+		if not is_instance_valid(g130):
+			break
+	var paid130: int = game.score - score130
+	var burst130: int = game.shards.size() - shards130
+	await _frames(150) # well past what completion would have been
+	var any_converting130: bool = false
+	var any_thief130: bool = false
+	for p: Pirate in game.pirates:
+		if p.is_converting():
+			any_converting130 = true
+		if p.current_role() == "thief":
+			any_thief130 = true
+	_check("death mid-conversion pays the gunner (score +%d = 150 x 2.0, shards +%d = 4) and nothing ever flips"
+		% [paid130, burst130],
+		mid130 and not is_instance_valid(g130)
+			and paid130 == 300 and burst130 == 4
+			and not any_converting130 and not any_thief130)
+
+	# (131) Hunters NEVER convert: a hunter-only field held past
+	# both the dead-air window and the no-steal backstop, with
+	# the quota spent (every trigger armed), produces nothing.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.director.quota_left = 0
+	game.player.global_position = Vector2(640.0, 700.0)
+	game.player.invincible_t = 1000000000.0
+	var h131: Pirate = game.spawn_pirate("hunter", Vector2(640.0, 150.0))
+	var saw_convert131: bool = false
+	for i: int in range(660): # 11s: past dead air (2.5s) and backstop (8s)
+		await _frames(1)
+		if not is_instance_valid(h131) or h131.is_converting():
+			saw_convert131 = true
+			break
+	_check("hunters never convert: 11s alone with every trigger armed, still hunting (convert seen %s)"
+		% str(saw_convert131),
+		not saw_convert131 and is_instance_valid(h131)
+			and h131.current_role() == "hunter")
+
+	# (132) One at a time, oldest first: with two gunners and the
+	# wave's thief killed, the OLDEST gunner converts; while the
+	# convert works as a thief the second gunner stays a shooter.
+	game.start_run()
+	game.director.active = false
+	game.clear_field() # quota stays live: dead air is the trigger here
+	game.player.global_position = Vector2(120.0, 680.0)
+	game.player.invincible_t = 1000000000.0
+	var a132: Pirate = game.spawn_pirate("gunner",
+		Tuning.depot_center() + Vector2(300.0, 60.0))
+	await _frames(70) # A is operational, and strictly the oldest
+	var b132: Pirate = game.spawn_pirate("gunner",
+		Tuning.depot_center() + Vector2(-300.0, -60.0))
+	var t132: Pirate = game.spawn_pirate("grabber",
+		Tuning.slot_position(5) + Vector2(-150.0, 0.0))
+	await _frames(10) # the thief registers; the wave flag sets
+	game.kill_pirate(t132, false)
+	var a_started132: bool = false
+	var b_started_early132: bool = false
+	for i: int in range(280):
+		await _frames(1)
+		if b132.is_converting():
+			b_started_early132 = true
+		if a132.is_converting():
+			a_started132 = true
+			break
+	var watched132: int = 0
+	var b_converted132: bool = false
+	for i: int in range(420):
+		await _frames(1)
+		if not is_instance_valid(a132) or not game.pirates.has(a132):
+			break
+		if a132.current_role() == "thief" and (
+				a132.phase == Pirate.Phase.SEEK
+				or a132.phase == Pirate.Phase.DRAG):
+			watched132 += 1
+			if b132.is_converting() or b132.current_role() != "shooter":
+				b_converted132 = true
+				break
+	_check("one at a time: the oldest gunner converts first; the second stays a shooter across %d frames of the convert working as a thief"
+		% watched132,
+		a_started132 and not b_started_early132
+			and not b_converted132 and watched132 >= 120)
+
+	# (133) Mop-up ending: quota spent, the last grabber killed,
+	# one gunner left. It converts, steals a canister, exits —
+	# and the wave ADVANCES. No soft-lock.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.director.quota_left = 0
+	game.player.global_position = Vector2(120.0, 680.0)
+	game.player.invincible_t = 1000000000.0
+	var t133: Pirate = game.spawn_pirate("grabber",
+		Tuning.slot_position(3) + Vector2(130.0, 0.0))
+	var g133: Pirate = game.spawn_pirate("gunner",
+		Tuning.depot_center() + Vector2(300.0, 0.0))
+	await _frames(70) # both operational; the grabber is en route or dragging
+	var killed133: bool = false
+	for i: int in range(60):
+		if not is_instance_valid(t133):
+			killed133 = true
+			break
+		game.spawn_bullet(t133.global_position + Vector2(-30.0, 0.0),
+			Vector2.RIGHT)
+		await _frames(1)
+	killed133 = killed133 or not is_instance_valid(t133)
+	var wave133: int = game.wave
+	var advanced133: bool = false
+	for i: int in range(1800):
+		await _frames(1)
+		if game.wave > wave133:
+			advanced133 = true
+			break
+	_check("mop-up ending: the last gunner converts, steals, exits and wave %d advances to %d (no soft-lock)"
+		% [wave133, game.wave],
+		killed133 and advanced133 and game.wave == wave133 + 1)
+
+	# (134) Backstop: a thief is alive and SEEKING (a working
+	# thief — dead air cannot accumulate, and the quota is live,
+	# so the quota trigger is inert too), yet a gunner converts
+	# when the no-steal clock runs out: the thief out failing to
+	# latch is exactly what the backstop exists for. TEST-ONLY
+	# LEVER (disclosed): the clock is aged directly, the same
+	# direct-write precedent as boss.hull_hp — the trigger, the
+	# gate and the conversion itself all run the real code.
+	game.start_run()
+	game.director.active = false
+	game.clear_field() # quota live (9): the quota trigger stays inert
+	game.player.global_position = Vector2(120.0, 680.0)
+	game.player.invincible_t = 1000000000.0
+	var t134: Pirate = game.spawn_pirate("grabber", Vector2(150.0, 150.0))
+	var g134: Pirate = game.spawn_pirate("gunner",
+		Tuning.depot_center() + Vector2(300.0, 0.0))
+	await _frames(70) # both operational; the grabber is mid-SEEK, far from any slot
+	var control134: bool = not g134.is_converting() \
+		and t134.phase == Pirate.Phase.SEEK
+	game._convert_no_progress_t = Tuning.CONVERT_NO_STEAL_BACKSTOP
+	var fired134: bool = false
+	for i: int in range(30):
+		await _frames(1)
+		if g134.is_converting():
+			fired134 = true
+			break
+	_check("backstop: with a live SEEK thief and a live quota, aging the no-steal clock to %.0fs converts the gunner anyway"
+		% Tuning.CONVERT_NO_STEAL_BACKSTOP,
+		control134 and fired134 and is_instance_valid(t134)
+			and t134.current_role() == "thief")
 
 	print("HARNESS: %d/%d checks passed" % [_passed, _passed + _failed])
 	get_tree().quit(0 if _failed == 0 else 1)
