@@ -571,6 +571,36 @@ func _ready() -> void:
 	_check("music loop lengths match beat specs within 4 samples",
 		lengths_ok)
 
+	# (141) M9 soundtrack re-voice freeze: the re-render changed
+	# voices only — every music stem keeps its M3 name, beat count
+	# and exact sample count, and the shared grid constants hold.
+	var expected_music: Dictionary = {
+		"kick": [16, 315936], "hats": [16, 315936],
+		"perc": [10, 197460], "drive": [16, 315936],
+		"bass_a": [16, 315936], "bass_b": [16, 315936],
+		"bass_c": [16, 315936], "arp_a": [12, 236952],
+		"arp_b": [12, 236952], "arp_c": [12, 236952],
+		"pad": [32, 631872], "title": [16, 315936],
+	}
+	var structure_ok: bool = int(manifest.get("bpm", 0)) == 134 \
+		and int(manifest.get("samples_per_beat", 0)) == 19746 \
+		and music_entries.size() == expected_music.size()
+	if structure_ok:
+		var ekeys: Array = expected_music.keys()
+		for key2: Variant in ekeys:
+			var kname: String = String(key2)
+			if not music_entries.has(kname):
+				structure_ok = false
+				break
+			var mentry: Dictionary = music_entries[kname] as Dictionary
+			var espec: Array = expected_music[key2] as Array
+			if int(mentry["beats"]) != int(espec[0]) \
+					or int(mentry["samples"]) != int(espec[1]):
+				structure_ok = false
+				break
+	_check("manifest structure frozen at M3 values (bpm 134, spb 19746, stem beats/samples)",
+		structure_ok)
+
 	# (29) Music director state machine (headless audio is a dummy
 	# driver: these assert the director's decisions, not audible
 	# output). Boot: TITLE with the title loop the active layer.
