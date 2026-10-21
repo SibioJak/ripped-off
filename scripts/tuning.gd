@@ -62,6 +62,11 @@ const BULLET_RADIUS: float = 4.0
 # --- Pirates --------------------------------------------------------------
 const TELEGRAPH_TIME: float = 0.8 # visible warning before a pirate can move
 const PIRATE_LATCH_DIST: float = 22.0
+const MAX_CONCURRENT_DRAGS: int = 2 # drag governor: at most this many
+	# canisters may be DRAGGING under pirate control at once, so a
+	# swarm can never snatch the whole depot in one moment. The
+	# boss's grab arm is EXEMPT: a boss-held canister never counts
+	# toward this cap, and the boss's own grab is never gated.
 const SPAWN_EXCLUSION_RADIUS: float = 260.0 # no spawn point this close to the player
 
 # --- Salvage shards ---------------------------------------------------------

@@ -216,16 +216,50 @@ func _step_thief_seek(delta: float, canisters: Array[Canister]) -> void:
 		target = _find_target(canisters)
 	if target == null:
 		_enter_leave()
-	else:
-		_steer_toward(target.global_position, _speed, delta)
-		if global_position.distance_to(target.global_position) \
-				<= Tuning.PIRATE_LATCH_DIST:
-			if target.begin_drag(self):
-				held = target
-				target = null
-				buzzed_this_drag = false # a fresh drag can be buzzed again
-				phase = Phase.DRAG
-				exit_point = Tuning.nearest_exit_point(global_position)
+		return
+	# Drag governor (Tuning.MAX_CONCURRENT_DRAGS): at most that
+	# many canisters may be DRAGGING under pirate control at
+	# once. The lane count is read once, here — it cannot change
+	# during this pirate's own step (steals resolve and pirates
+	# die in Main's phases, never inside a pirate step). A thief
+	# that reaches its canister while every lane is taken does
+	# NOT latch: it holds station at the latch ring — no steering
+	# at all, velocity zeroed, so it cannot buzz or orbit the
+	# canister — and re-tests the gate on the next step, latching
+	# the moment a lane frees (a steal carries its canister off,
+	# or a dragging pirate dies and drops its haul). The wait
+	# stays in Phase.SEEK throughout, so Main's conversion
+	# watcher keeps counting this pirate as a working thief.
+	var lanes_full: bool = _pirate_drag_count(canisters) \
+		>= Tuning.MAX_CONCURRENT_DRAGS
+	if lanes_full \
+			and global_position.distance_to(target.global_position) \
+			<= Tuning.PIRATE_LATCH_DIST:
+		velocity = Vector2.ZERO
+		return
+	_steer_toward(target.global_position, _speed, delta)
+	if not lanes_full \
+			and global_position.distance_to(target.global_position) \
+			<= Tuning.PIRATE_LATCH_DIST \
+			and target.begin_drag(self):
+		held = target
+		target = null
+		buzzed_this_drag = false # a fresh drag can be buzzed again
+		phase = Phase.DRAG
+		exit_point = Tuning.nearest_exit_point(global_position)
+
+
+## The drag governor's lane count: how many canisters are
+## DRAGGING under PIRATE control right now. The holder test is
+## the whole exemption — a canister held by the boss's grab arm
+## (holder is the Boss, not a Pirate) never counts, so the boss
+## neither consumes a pirate lane nor is ever gated by one.
+func _pirate_drag_count(canisters: Array[Canister]) -> int:
+	var n: int = 0
+	for c: Canister in canisters:
+		if c.state == Canister.State.DRAGGING and c.holder is Pirate:
+			n += 1
+	return n
 
 
 ## The reshape (M7): the ship holds its position and rebuilds
