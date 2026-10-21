@@ -1,7 +1,8 @@
 class_name Boss
 extends Node2D
-## The DREADNOUGHT — Ripped-Off's first boss, on every 5th wave
-## (design doc, "Enemies and bosses"). A big vector capital that
+## The DREADNOUGHT — Ripped-Off's first boss, on odd boss
+## numbers (waves 5, 15, 25, ...; the Broadside takes the even
+## slots — design doc, "Enemies and bosses"). A big vector capital that
 ## stations in the arena's top band and never leaves it: a tier-
 ## scaled hull, two breakable turrets firing telegraphed aimed
 ## shots, a breakable grab arm that steals canisters, radial ring
@@ -117,16 +118,52 @@ func setup(p_wave: int) -> void:
 	queue_redraw()
 
 
+# --- Identity & geometry hooks -------------------------------------
+## Main routes score, colour and names through these so a second
+## capital (Broadside, broadside.gd) shares the routing; the
+## Dreadnought's answers live here, the Broadside overrides them.
+
+func theme_color() -> Color:
+	return Tuning.COLOR_BOSS
+
+
+func display_name() -> String:
+	return Tuning.BOSS_NAME
+
+
+func kill_score_value() -> int:
+	return Tuning.boss_score_value(tier)
+
+
+## Part geometry source: id -> {offset, radius} in local space.
+func part_def(part_id: String) -> Dictionary:
+	return PART_DEFS[part_id] as Dictionary
+
+
+func part_ids() -> Array:
+	return PART_DEFS.keys()
+
+
+## Hull hit-circle source: [offset, radius] rows in local space.
+func hull_circle_defs() -> Array:
+	return HULL_CIRCLES
+
+
+## Local -> world for part and hull offsets. The Dreadnought
+## never rotates, so this is a plain translation; the Broadside
+## orbits nose-tangent and overrides it to rotate the offset.
+func to_world(local: Vector2) -> Vector2:
+	return global_position + local
+
+
 # --- Queries -------------------------------------------------------------
 
 func part_world(part_id: String) -> Vector2:
-	var pd: Dictionary = PART_DEFS[part_id] as Dictionary
-	return global_position + (pd["offset"] as Vector2)
+	return to_world(part_def(part_id)["offset"] as Vector2)
 
 
 func part_radius(part_id: String) -> float:
-	var pd: Dictionary = PART_DEFS[part_id] as Dictionary
-	return float(pd["radius"])
+	return float(part_def(part_id)["radius"])
 
 
 func is_part_broken(part_id: String) -> bool:
@@ -149,14 +186,14 @@ func hull_frac() -> float:
 ## bullet hits and player contact.
 func hit_circles() -> Array:
 	var out: Array = []
-	var ids: Array = PART_DEFS.keys()
+	var ids: Array = part_ids()
 	for pid_v: Variant in ids:
 		var pid: String = String(pid_v)
 		if not is_part_broken(pid):
 			out.append([part_world(pid), part_radius(pid), pid])
-	for circ_v: Variant in HULL_CIRCLES:
+	for circ_v: Variant in hull_circle_defs():
 		var circ: Array = circ_v as Array
-		out.append([global_position + (circ[0] as Vector2),
+		out.append([to_world(circ[0] as Vector2),
 			float(circ[1]), "hull"])
 	return out
 
@@ -226,18 +263,7 @@ func _drop_arm_hold() -> void:
 
 func step(delta: float, canisters: Array[Canister], player_pos: Vector2,
 		player_alive: bool) -> void:
-	proximity_active = Tuning.boss_proximity_active(
-		player_pos, global_position)
-	if proximity_active:
-		_proximity_pulse_t += delta
-	_hull_flash = maxf(_hull_flash - delta, 0.0)
-	var ids: Array = _parts.keys()
-	for pid_v: Variant in ids:
-		var pid: String = String(pid_v)
-		var pd: Dictionary = _parts[pid] as Dictionary
-		if float(pd["flash"]) > 0.0:
-			pd["flash"] = maxf(float(pd["flash"]) - delta, 0.0)
-			_parts[pid] = pd
+	_common_pre_step(delta, player_pos)
 	match phase:
 		Phase.ENTRY:
 			_entry_t += delta
@@ -252,21 +278,46 @@ func step(delta: float, canisters: Array[Canister], player_pos: Vector2,
 			_step_active(delta, canisters, player_pos, player_alive)
 		Phase.DYING:
 			_step_dying(delta)
-	# Broken parts spark occasionally; Main routes the light.
-	if phase != Phase.DYING:
-		_spark_t -= delta
-		if _spark_t <= 0.0:
-			_spark_t = _rng.randf_range(0.5, 1.1)
-			var broken: Array[String] = []
-			for pid_v2: Variant in ids:
-				var pid2: String = String(pid_v2)
-				if is_part_broken(pid2):
-					broken.append(pid2)
-			if not broken.is_empty():
-				var pick: String = broken[
-					_rng.randi_range(0, broken.size() - 1)]
-				spark.emit(part_world(pick))
+	_common_sparks(delta)
 	queue_redraw()
+
+
+## Per-frame housekeeping shared by every capital (the Broadside
+## calls these from its own step): proximity state, hit-flash
+## decay. Runs BEFORE the phase logic, as step() always has.
+func _common_pre_step(delta: float, player_pos: Vector2) -> void:
+	proximity_active = Tuning.boss_proximity_active(
+		player_pos, global_position)
+	if proximity_active:
+		_proximity_pulse_t += delta
+	_hull_flash = maxf(_hull_flash - delta, 0.0)
+	var ids: Array = _parts.keys()
+	for pid_v: Variant in ids:
+		var pid: String = String(pid_v)
+		var pd: Dictionary = _parts[pid] as Dictionary
+		if float(pd["flash"]) > 0.0:
+			pd["flash"] = maxf(float(pd["flash"]) - delta, 0.0)
+			_parts[pid] = pd
+
+
+## Broken parts spark occasionally; Main routes the light.
+## Runs AFTER the phase logic, as step() always has.
+func _common_sparks(delta: float) -> void:
+	if phase == Phase.DYING:
+		return
+	_spark_t -= delta
+	if _spark_t <= 0.0:
+		_spark_t = _rng.randf_range(0.5, 1.1)
+		var broken: Array[String] = []
+		var ids: Array = _parts.keys()
+		for pid_v2: Variant in ids:
+			var pid2: String = String(pid_v2)
+			if is_part_broken(pid2):
+				broken.append(pid2)
+		if not broken.is_empty():
+			var pick: String = broken[
+				_rng.randi_range(0, broken.size() - 1)]
+			spark.emit(part_world(pick))
 
 
 func _step_active(delta: float, canisters: Array[Canister],
@@ -527,7 +578,7 @@ func _step_dying(delta: float) -> void:
 		var ev: Dictionary = _death_events[_death_idx]
 		_death_idx += 1
 		detonated.emit(ev["pos"] as Vector2, int(ev["cls"]),
-			Tuning.COLOR_BOSS, String(ev["sound"]))
+			theme_color(), String(ev["sound"]))
 	for i: int in range(_chunks.size() - 1, -1, -1):
 		var ch: Dictionary = _chunks[i]
 		ch["t"] = float(ch["t"]) + delta
@@ -614,7 +665,7 @@ func _draw_proximity_ring(base: Color) -> void:
 
 
 func _draw_part(part_id: String) -> void:
-	var pd: Dictionary = PART_DEFS[part_id] as Dictionary
+	var pd: Dictionary = part_def(part_id)
 	var off: Vector2 = pd["offset"] as Vector2
 	var r: float = float(pd["radius"])
 	var broken: bool = is_part_broken(part_id)

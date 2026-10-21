@@ -297,9 +297,12 @@ static func rank_fire_mult(rank: float) -> float:
 	return lerpf(1.0, GUNNER_FIRE_MIN_FRAC, clampf(rank, 0.0, 1.0))
 
 
-# --- Dreadnought (M4: the first boss, every 5th wave) -------------------
-# Tier = wave / 5 (wave 5 -> tier 1, wave 10 -> tier 2, ...). Every boss
-# number lives here so the fight retunes from one place.
+# --- Capitals (M4: the Dreadnought; M10: the Broadside) ----------------
+# A boss wave lands every 5th wave; boss NUMBER n = wave / 5 selects
+# the ship (odd n: Dreadnought, even n: Broadside) and each ship's
+# tier advances per APPEARANCE (wave 5 Dread t1, 10 Broadside t1,
+# 15 Dread t2, 20 Broadside t2). Every boss number lives here so
+# the fights retune from one place.
 const BOSS_NAME: String = "DREADNOUGHT"
 const BOSS_HULL_HP: int = 120 # Tier-1 hull pool. Reasoning: the player
 	# lands at most ~6.7 hits/s (1 damage per bullet at the 0.15s fire
@@ -347,8 +350,28 @@ const COLOR_BOSS_BULLET_CORE: Color = Color(1.0, 0.6, 0.85, 1.0)
 const COLOR_BOSS_BULLET_RIM: Color = Color(0.28, 0.03, 0.14, 1.0)
 
 
-static func boss_tier(wave: int) -> int:
+## Boss number for a boss wave: wave 5 -> 1, wave 10 -> 2, ...
+static func boss_number(wave: int) -> int:
 	return maxi(wave / 5, 1)
+
+
+## Even boss numbers field the Broadside; odd ones the Dreadnought.
+static func is_broadside_wave(wave: int) -> bool:
+	return boss_number(wave) % 2 == 0
+
+
+static func boss_name_for_wave(wave: int) -> String:
+	return BROADSIDE_NAME if is_broadside_wave(wave) else BOSS_NAME
+
+
+## The fighting tier of the boss on this wave: per APPEARANCE of
+## its own class (the wave-15 Dreadnought is tier 2, not 3 — the
+## wave-10 slot between its appearances belongs to the Broadside).
+static func boss_tier(wave: int) -> int:
+	var n: int = boss_number(wave)
+	if n % 2 == 1:
+		return (n + 1) / 2
+	return maxi(n / 2, 1)
 
 
 static func boss_hull_hp(tier: int) -> int:
@@ -368,6 +391,64 @@ static func boss_radial_count(tier: int) -> int:
 static func boss_score_value(tier: int) -> int:
 	return int(round(float(BOSS_SCORE)
 		* (1.0 + BOSS_SCORE_TIER_STEP * float(tier - 1))))
+
+
+# --- Broadside (M10: the second capital, even boss numbers) -------------
+# An orbiting flank gunship: a pure duel — it never touches the
+# canisters. Hull and score scale on the Dreadnought's tier curves
+# (BOSS_TIER_HP_STEP / BOSS_SCORE_TIER_STEP) from bigger bases: it
+# moves, so it is harder to keep guns on, and the fight runs longer.
+const BROADSIDE_NAME: String = "BROADSIDE"
+const BROADSIDE_HULL_HP: int = 140 # tier-1 hull pool (Dreadnought: 120)
+const BROADSIDE_SCORE: int = 3000 # base kill value (Dreadnought: 2500)
+const BROADSIDE_POD_HP: int = 15 # per battery pod (6 pods)
+const BROADSIDE_ENGINE_HP: int = 20 # per engine (2)
+const BROADSIDE_ORBIT_RADIUS: float = 330.0 # around the depot centre
+const BROADSIDE_ORBIT_SPEED: float = 0.32 # rad/s at tier 1: one full
+	# circle in ~19.6s — a moving fight, not a chase
+const BROADSIDE_ORBIT_SPEED_PER_TIER: float = 0.02
+const BROADSIDE_ORBIT_SPEED_CAP: float = 0.42
+const BROADSIDE_VOLLEY_INTERVAL: float = 3.2 # seconds between volleys, tier 1
+const BROADSIDE_VOLLEY_TIER_STEP: float = 0.06 # interval scale step per tier
+const BROADSIDE_VOLLEY_TIER_FLOOR: float = 0.7 # interval scale never below
+const BROADSIDE_VOLLEY_ENGINE_STEP: float = 1.15 # interval x per dead engine
+const BROADSIDE_VOLLEY_CHARGE_TIME: float = 0.5 # presented pods glow first
+const BROADSIDE_AIM_CAP: float = 0.35 # rad the volley bends toward the player
+const BROADSIDE_REVERSE_TIME: float = 1.2 # coming-about turn, no fire
+const BROADSIDE_COOKOFF_DELAY: float = 0.4 # sizzle before a dead flank's fan
+const BROADSIDE_COOKOFF_COUNT: int = 7 # bullets in the cook-off fan
+const BROADSIDE_COOKOFF_SPREAD: float = 0.5 # rad, +/- around the flank normal
+const BROADSIDE_BOW_INTERVAL: float = 2.4 # bow-gun cycle once both flanks die
+const BROADSIDE_BOW_CHARGE_TIME: float = 0.4
+const BROADSIDE_ENGINE_SLOW: float = 0.72 # orbit rate x per dead engine
+const BROADSIDE_DESPERATION_FRAC: float = 0.5 # hull fraction: ONE escalation
+const BROADSIDE_DESPERATION_VOLLEY: float = 0.8 # volley interval x, permanent
+const BROADSIDE_DESPERATION_SPEED: float = 1.15 # orbit rate x, permanent
+const COLOR_BROADSIDE: Color = Color(1.0, 0.5, 0.1, 1.0) # burnt amber —
+	# a different capital read from the Dreadnought's hot magenta
+const COLOR_BROADSIDE_BULLET_CORE: Color = Color(1.0, 0.72, 0.25, 1.0)
+const COLOR_BROADSIDE_BULLET_RIM: Color = Color(0.25, 0.05, 0.02, 1.0)
+
+
+static func broadside_hull_hp(tier: int) -> int:
+	return int(round(float(BROADSIDE_HULL_HP)
+		* (1.0 + BOSS_TIER_HP_STEP * float(tier - 1))))
+
+
+static func broadside_score_value(tier: int) -> int:
+	return int(round(float(BROADSIDE_SCORE)
+		* (1.0 + BOSS_SCORE_TIER_STEP * float(tier - 1))))
+
+
+static func broadside_orbit_speed(tier: int) -> float:
+	return minf(BROADSIDE_ORBIT_SPEED_CAP,
+		BROADSIDE_ORBIT_SPEED
+			+ BROADSIDE_ORBIT_SPEED_PER_TIER * float(tier - 1))
+
+
+static func broadside_volley_interval(tier: int) -> float:
+	return BROADSIDE_VOLLEY_INTERVAL * maxf(BROADSIDE_VOLLEY_TIER_FLOOR,
+		1.0 - BROADSIDE_VOLLEY_TIER_STEP * float(tier - 1))
 
 
 ## The proximity rule, measured centre-to-centre at bullet impact.
