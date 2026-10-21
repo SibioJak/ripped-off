@@ -220,6 +220,51 @@ func _shoot_part_once(b: Boss, part_id: String) -> void:
 	await _frames(3)
 
 
+## M10 helper: same flow as _start_boss_wave, into the wave-10
+## slot — a Broadside wave. Returns the ACTIVE Broadside.
+func _start_broadside_wave() -> Broadside:
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.wave = 9
+	game._start_next_wave() # -> wave 10: a Broadside wave
+	game.player.global_position = Vector2(120.0, 680.0)
+	game.player.invincible_t = 1000000000.0
+	var b: Boss = null
+	for i: int in range(300):
+		await _frames(1)
+		if game.bosses.size() > 0:
+			b = game.bosses[0]
+			break
+	return (await _await_boss_active(b)) as Broadside
+
+
+## M10 helper: land exactly one real player bullet on one
+## Broadside part. The shot approaches from the part's OUTER
+## side (radially away from the boss centre): on a rotating
+## hull the part circle — tested before the hull — is the
+## first circle on that ray from either flank.
+func _shoot_bs_part_once(b: Broadside, part_id: String) -> void:
+	var pp: Vector2 = b.part_world(part_id)
+	var out_dir: Vector2 = (pp - b.global_position).normalized()
+	game.spawn_bullet(pp + out_dir * 40.0, -out_dir)
+	await _frames(3)
+
+
+## M10 helper: grind one Broadside part to breaking with real
+## bullets (bounded), re-aiming radially at the live part
+## position every shot. Returns true if the part broke.
+func _shoot_bs_part_until_broken(b: Broadside, part_id: String) -> bool:
+	for i: int in range(120):
+		if b.is_part_broken(part_id):
+			return true
+		var pp: Vector2 = b.part_world(part_id)
+		var out_dir: Vector2 = (pp - b.global_position).normalized()
+		game.spawn_bullet(pp + out_dir * 40.0, -out_dir)
+		await _frames(2)
+	return b.is_part_broken(part_id)
+
+
 func _ready() -> void:
 	var packed: PackedScene = load("res://scenes/main.tscn") as PackedScene
 	game = packed.instantiate() as Main
@@ -1002,17 +1047,23 @@ func _ready() -> void:
 				>= Tuning.boss_score_value(1)
 			and game.shards.size() >= 12)
 
-	# (75) Tier scaling: a wave-10 boss has strictly more hull
-	# than a wave-5 boss.
+	# (75) Tier scaling — REWORKED for M10's alternation.
+	# OLD: wave 10 (then a tier-2 Dreadnought) had strictly more
+	# hull than wave 5. NEW: the wave-10 slot belongs to the
+	# Broadside, so the Dreadnought's own tier comparison runs
+	# wave 5 (tier 1) vs wave 15 (tier 2) — same intent: a later
+	# appearance of the same capital is strictly tougher, on the
+	# same hull curve.
 	var t5: Boss = game.spawn_boss(5)
-	var t10: Boss = game.spawn_boss(10)
-	_check("tier scaling: wave-10 hull strictly exceeds wave-5",
-		t10.max_hull_hp > t5.max_hull_hp
+	var t15: Boss = game.spawn_boss(15)
+	_check("tier scaling: wave-15 Dreadnought (t2) hull exceeds wave-5 (t1)",
+		t15.tier == 2 and t15.max_hull_hp == Tuning.boss_hull_hp(2)
+			and t15.max_hull_hp > t5.max_hull_hp
 			and t5.max_hull_hp == Tuning.BOSS_HULL_HP)
 	game.bosses.erase(t5)
 	t5.queue_free()
-	game.bosses.erase(t10)
-	t10.queue_free()
+	game.bosses.erase(t15)
+	t15.queue_free()
 
 	# (76) Player contact with the boss kills the player and does
 	# not damage the boss (no ram-kill on a capital).
@@ -2670,6 +2721,314 @@ func _ready() -> void:
 				* (1.0 + Tuning.ENEMY_BULLET_PULSE_RADIUS_FRAC) + 0.01
 			and r_max140 - r_min140 > 0.9
 			and tint_bounds140 and tint_g_max140 > 0.3)
+
+	# ================= M10: the Broadside =================
+	# (142) Alternation: boss numbers 1..4 (waves 5/10/15/20)
+	# deal Dreadnought t1, Broadside t1, Dreadnought t2,
+	# Broadside t2 — class and tier asserted, Broadside hulls
+	# on their own curve (140 / 224).
+	var a5: Boss = game.spawn_boss(5)
+	var a10: Boss = game.spawn_boss(10)
+	var a15: Boss = game.spawn_boss(15)
+	var a20: Boss = game.spawn_boss(20)
+	_check("alternation: waves 5/10/15/20 = Dread t1 / Broadside t1 / Dread t2 / Broadside t2",
+		not (a5 is Broadside) and a5.tier == 1
+			and a5.max_hull_hp == Tuning.BOSS_HULL_HP
+			and a10 is Broadside and a10.tier == 1
+			and a10.max_hull_hp == Tuning.broadside_hull_hp(1)
+			and a10.max_hull_hp == 140
+			and not (a15 is Broadside) and a15.tier == 2
+			and a15.max_hull_hp == Tuning.boss_hull_hp(2)
+			and a20 is Broadside and a20.tier == 2
+			and a20.max_hull_hp == Tuning.broadside_hull_hp(2)
+			and a20.max_hull_hp == 224)
+	for ab: Boss in [a5, a10, a15, a20]:
+		game.bosses.erase(ab)
+		ab.queue_free()
+	_clear_hostiles()
+
+	# (143) Orbit: the distance from the depot centre holds the
+	# 330px band while the angle advances steadily one way.
+	var bo: Broadside = await _start_broadside_wave()
+	var oc: Vector2 = Tuning.depot_center()
+	var omin: float = 1e9
+	var omax: float = 0.0
+	var o_prev: float = bo.orbit_angle
+	var o_adv: float = 0.0
+	for i: int in range(240):
+		await _frames(1)
+		var d143: float = bo.global_position.distance_to(oc)
+		omin = minf(omin, d143)
+		omax = maxf(omax, d143)
+		o_adv += wrapf(bo.orbit_angle - o_prev, -PI, PI)
+		o_prev = bo.orbit_angle
+	_check("orbit: radius holds 330 +/-25 over 240 frames, angle advances %.2f rad one way" % o_adv,
+		omin >= Tuning.BROADSIDE_ORBIT_RADIUS - 25.0
+			and omax <= Tuning.BROADSIDE_ORBIT_RADIUS + 25.0
+			and signf(o_adv) == float(bo.orbit_dir)
+			and absf(o_adv) > 0.9)
+
+	# (144) Presented-flank volley: exactly the inward flank's
+	# three live pods fire; every origin sits on the inward
+	# side; every direction stays within the aim cap of the
+	# inward normal.
+	var bv: Broadside = await _start_broadside_wave()
+	game.player.global_position = oc
+	game.player.invincible_t = 1000000000.0
+	var v144: int = bv.volleys_fired
+	var guard144: int = 0
+	while bv.volleys_fired == v144 and guard144 < 600:
+		await _frames(1)
+		guard144 += 1
+	var inward144: Vector2 = (oc - bv.global_position).normalized()
+	var origins_in144: bool = bv.last_volley_origins.size() == 3
+	for o144: Vector2 in bv.last_volley_origins:
+		if (o144 - bv.global_position).dot(inward144) <= 0.0:
+			origins_in144 = false
+	var dirs_ok144: bool = bv.last_volley_dirs.size() == 3
+	for dv144: Vector2 in bv.last_volley_dirs:
+		if absf(dv144.angle_to(inward144)) \
+				> Tuning.BROADSIDE_AIM_CAP + 0.01:
+			dirs_ok144 = false
+	_check("presented volley: 3 origins all inward-side, dirs within the 0.35 cap",
+		bv.volleys_fired > v144 and origins_in144 and dirs_ok144)
+
+	# (145) Dead-pod gap: break the presented flank's middle
+	# pod; the next volley fires exactly one fewer bullet.
+	var ps145: int = bv.presented_side_sign()
+	var mid145: String = Broadside.POD_PORT_2 if ps145 < 0 \
+		else Broadside.POD_STARBOARD_2
+	var broke145: bool = await _shoot_bs_part_until_broken(bv, mid145)
+	var v145: int = bv.volleys_fired
+	var guard145: int = 0
+	while bv.volleys_fired == v145 and guard145 < 600:
+		await _frames(1)
+		guard145 += 1
+	_check("dead-pod gap: broken presented pod leaves a hole (volley of 2)",
+		broke145 and bv.last_volley_origins.size() == 2)
+
+	# (146) Stripped flank: the presented battery's last pod
+	# cooks off — exactly 7 bullets after the 0.4s sizzle, not
+	# instantly — then the boss comes about (orbit sign flips)
+	# and the fresh flank answers with a full rank of 3.
+	bv.park_volleys()
+	var side146: int = bv.presented_side_sign()
+	var pods146: Array[String] = []
+	if side146 < 0:
+		pods146 = [Broadside.POD_PORT_1, Broadside.POD_PORT_2,
+			Broadside.POD_PORT_3]
+	else:
+		pods146 = [Broadside.POD_STARBOARD_1,
+			Broadside.POD_STARBOARD_2, Broadside.POD_STARBOARD_3]
+	var broke_all146: bool = true
+	for pid146: String in pods146:
+		if not await _shoot_bs_part_until_broken(bv, pid146):
+			broke_all146 = false
+	var dir146: int = bv.orbit_dir
+	_clear_hostiles() # the fan has not fired yet (sizzle): count from 0
+	await _frames(10)
+	var no_early146: bool = game.enemy_bullets.size() == 0
+	var fan_frames146: int = 0
+	while game.enemy_bullets.size() == 0 and fan_frames146 < 60:
+		await _frames(1)
+		fan_frames146 += 1
+	var fan146: bool = game.enemy_bullets.size() \
+		== Tuning.BROADSIDE_COOKOFF_COUNT
+	var flip_frames146: int = 0
+	while bv.orbit_dir == dir146 and flip_frames146 < 150:
+		await _frames(1)
+		flip_frames146 += 1
+	var flipped146: bool = bv.orbit_dir == -dir146
+	bv._volley_t = 0.1 # unpark (direct-write staging lever)
+	var v146: int = bv.volleys_fired
+	var guard146: int = 0
+	while bv.volleys_fired == v146 and guard146 < 400:
+		await _frames(1)
+		guard146 += 1
+	var inward146: Vector2 = (oc - bv.global_position).normalized()
+	var new_side146: bool = bv.last_volley_origins.size() == 3
+	for o146: Vector2 in bv.last_volley_origins:
+		if (o146 - bv.global_position).dot(inward146) <= 0.0:
+			new_side146 = false
+	_check("stripped flank: cook-off 7 after the sizzle (not instant), one reversal, fresh flank fires 3",
+		broke_all146 and no_early146 and fan146
+			and bv.cookoffs_fired == 1 and flipped146 and new_side146)
+
+	# (147) Both batteries stripped: the bow gun takes over —
+	# single aimed shots on the ~2.4s cycle, no volleys, no
+	# further reversals.
+	var bb: Broadside = await _start_broadside_wave()
+	bb.hull_hp = 10000 # staging: survive stripping all six pods
+	game.player.global_position = Vector2(200.0, 200.0)
+	game.player.invincible_t = 1000000000.0
+	var all_pods147: Array[String] = [
+		Broadside.POD_PORT_1, Broadside.POD_PORT_2,
+		Broadside.POD_PORT_3, Broadside.POD_STARBOARD_1,
+		Broadside.POD_STARBOARD_2, Broadside.POD_STARBOARD_3]
+	var stripped147: bool = true
+	for pid147: String in all_pods147:
+		if not await _shoot_bs_part_until_broken(bb, pid147):
+			stripped147 = false
+	_clear_hostiles()
+	# A turn begun while the first battery died may still be
+	# running when the second empties; it completes (a physical
+	# manoeuvre already underway). "No further reversals" is
+	# judged on the settled bow phase: wait the turn out first.
+	var settle147: int = 0
+	while bb._reversing and settle147 < 200:
+		await _frames(1)
+		settle147 += 1
+	var dir147: int = bb.orbit_dir
+	var vol147: int = bb.volleys_fired
+	var shots147: Array[int] = []
+	var seen147: int = 0
+	var aim_ok147: bool = false
+	var frame147: int = 0
+	while frame147 < 400 and shots147.size() < 2:
+		await _frames(1)
+		frame147 += 1
+		if bb.bow_shots_fired > seen147:
+			seen147 = bb.bow_shots_fired
+			shots147.append(frame147)
+			# The bullet this shot spawned is the newest one.
+			if game.enemy_bullets.size() > 0:
+				var eb147: EnemyBullet = game.enemy_bullets[
+					game.enemy_bullets.size() - 1]
+				var want147: Vector2 = (game.player.global_position
+					- eb147.global_position).normalized()
+				if eb147.velocity.normalized().dot(want147) > 0.98:
+					aim_ok147 = true
+	var gap_ok147: bool = shots147.size() >= 2 \
+		and shots147[1] - shots147[0] >= 120 \
+		and shots147[1] - shots147[0] <= 170
+	_check("bow gun: single aimed shots on ~2.4s cadence, no volleys, no reversal (stripped %s, shots %s, gap_ok %s, volleys %d -> %d, dir_same %s, aim %s)"
+			% [stripped147, shots147, gap_ok147, vol147,
+				bb.volleys_fired, bb.orbit_dir == dir147, aim_ok147],
+		stripped147 and shots147.size() >= 2 and gap_ok147
+			and bb.volleys_fired == vol147
+			and bb.orbit_dir == dir147 and aim_ok147)
+
+	# (148) Engine slowdown: one dead engine multiplies the
+	# orbit rate by 0.72.
+	var be: Broadside = await _start_broadside_wave()
+	be.park_volleys()
+	await _frames(3) # angular_speed_now first lands on an ACTIVE step
+	var w0_148: float = absf(be.angular_speed_now)
+	var broke148: bool = await _shoot_bs_part_until_broken(
+		be, Broadside.ENGINE_1)
+	var w1_148: float = absf(be.angular_speed_now)
+	_check("engine slowdown: one engine down, orbit rate x%.3f (expect ~0.72)"
+			% (w1_148 / w0_148),
+		broke148 and w0_148 > 0.0
+			and absf(w1_148 / w0_148
+				- Tuning.BROADSIDE_ENGINE_SLOW) < 0.072)
+
+	# (149) Desperation: crossing 50% hull applies the one-time
+	# x0.8 volley interval — and fires NO radial burst (the
+	# Dreadnought's signature stays the Dreadnought's).
+	var bd: Broadside = await _start_broadside_wave()
+	bd.park_volleys()
+	var iv149: float = bd.current_volley_interval()
+	bd.hull_hp = 71 # 50.7%: not yet
+	bd.damage_hull(0)
+	var not_yet149: bool = not bd.desperate
+	bd.damage_hull(1) # 70/140 = exactly 50%
+	_clear_hostiles()
+	await _frames(120)
+	_check("desperation: x0.8 volley interval at 50% hull, no radial burst",
+		not_yet149 and bd.desperate
+			and absf(bd.current_volley_interval()
+				- iv149 * Tuning.BROADSIDE_DESPERATION_VOLLEY) < 0.001
+			and game.enemy_bullets.size() == 0
+			and bd.phase == Boss.Phase.ACTIVE)
+
+	# (150) Pass-through + proximity parity on the Broadside:
+	# a far pod hit costs pod 1 / hull 1 / +5 ticks; a close
+	# pod hit (inside the 300px band) costs 2 / 2 / +20 — the
+	# Dreadnought's exact numbers, through the same Main path.
+	var bp: Broadside = await _start_broadside_wave()
+	bp.park_volleys()
+	bp.park_orbit()
+	bp.orbit_angle = PI # boss centre at (310, 400)
+	game.multiplier = 1.0
+	var side150: int = bp.presented_side_sign()
+	var mid150: String = Broadside.POD_PORT_2 if side150 < 0 \
+		else Broadside.POD_STARBOARD_2
+	var pod150: int = bp.part_hp(mid150)
+	var hull150: int = bp.hull_hp
+	var score150: int = game.score
+	# FAR: the player shoots from 500px east of the boss centre.
+	game.player.global_position = bp.global_position \
+		+ Vector2(500.0, 0.0)
+	await _shoot_bs_part_once(bp, mid150)
+	var far_ok150: bool = bp.part_hp(mid150) == pod150 - 1 \
+		and bp.hull_hp == hull150 - 1 \
+		and game.score - score150 == Tuning.boss_tick_points(false)
+	# CLOSE: the player stands 250px from the boss centre.
+	game.player.global_position = bp.global_position \
+		+ Vector2(250.0, 0.0)
+	pod150 = bp.part_hp(mid150)
+	hull150 = bp.hull_hp
+	score150 = game.score
+	await _frames(2) # proximity settles on the boss's step
+	await _shoot_bs_part_once(bp, mid150)
+	_check("pass-through + proximity parity: far -1/-1/+5, close -2/-2/+20",
+		far_ok150 and bp.part_hp(mid150) == pod150 - 2
+			and bp.hull_hp == hull150 - 2
+			and game.score - score150
+				== Tuning.boss_tick_points(true))
+
+	# (151) Death completion through the real wave flow: the
+	# wave-10 Broadside pays broadside_score_value(1), drops
+	# the guaranteed powerup, fountains shards, advances the
+	# wave 10 -> 11 — and never touches a canister.
+	var bk: Broadside = await _start_broadside_wave()
+	var states151: Array = []
+	for c151: Canister in game.canisters:
+		states151.append(int(c151.state))
+	bk.park_volleys()
+	bk.park_orbit()
+	var death_pos151: Vector2 = bk.global_position
+	var score151: int = game.score
+	game.multiplier = 1.0
+	bk.hull_hp = 1
+	await _shoot_hull(bk, 1)
+	var done151: bool = false
+	for i: int in range(400):
+		await _frames(1)
+		if game.wave == 11:
+			done151 = true
+			break
+	var pu151: bool = false
+	for pu: Powerup in game.pickups:
+		if pu.global_position.distance_to(death_pos151) <= 60.0:
+			pu151 = true
+	var states_ok151: bool = game.canisters.size() == states151.size()
+	for ci151: int in range(game.canisters.size()):
+		if int(game.canisters[ci151].state) != states151[ci151]:
+			states_ok151 = false
+	_check("death completion: wave 10 -> 11, payout >= 3000, powerup dropped, shards >= 12, canisters untouched",
+		done151 and game.score - score151
+				>= Tuning.broadside_score_value(1)
+			and pu151 and game.shards.size() >= 12 and states_ok151)
+
+	# (152) Contact parity: the Broadside's hull kills on
+	# contact and takes no damage doing it.
+	var bc: Broadside = await _start_broadside_wave()
+	bc.park_volleys()
+	bc.park_orbit()
+	_clear_hostiles()
+	var hull152: int = bc.hull_hp
+	game.player.invincible_t = 0.0
+	game.player.global_position = bc.global_position
+	var died152: bool = false
+	for i: int in range(15):
+		await _frames(1)
+		if not game.player.alive:
+			died152 = true
+			break
+	_check("contact parity: player dies on the Broadside's hull, hull unharmed",
+		died152 and bc.hull_hp == hull152)
 
 	print("HARNESS: %d/%d checks passed" % [_passed, _passed + _failed])
 	get_tree().quit(0 if _failed == 0 else 1)
