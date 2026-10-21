@@ -26,6 +26,18 @@ beat COUNTS create the polyrhythm. Effective tempo at SPB is
 Kick B (Chris's locked standard): sine pitch sweep 120 -> 40 Hz,
 ~0.40 s body, heavy sub-80 Hz energy. The sub-80 share of one
 isolated kick is measured and printed below.
+
+M9 re-voice (Chris's genre call, 2026-10-21): the palette aims at
+Boris Brejcha's "high-tech minimal" (his reference: Sam Paganini's
+"Rave", Brejcha remix) — almost no high end, very low, builds up.
+Same compositions, tempo, loop lengths and pattern structures;
+the VOICES move down. The bass becomes a continuous 16th-note
+ROLL whose accents/pitches are the old patterns' skeletons; hats
+become dry lowpassed ticks; the perc figure becomes low knocks;
+the drive layer's claps are replaced by low weight (toms, doubled
+roll accents, low noise pressure); the arp drops an octave into a
+dark pluck; the pad sheds its top partials. The kick stem and all
+SFX are untouched.
 """
 
 import json
@@ -168,76 +180,91 @@ def measure_sub80(x: np.ndarray) -> float:
     return float(energy[freqs < 80.0].sum() / max(energy.sum(), 1e-12))
 
 
-def closed_hat(dur: float = 0.045, gain: float = 1.0) -> np.ndarray:
+TICK_RNG = np.random.default_rng(777001)  # the dry low voices' noise
+
+
+def tick_burst(dur: float = 0.028, gain: float = 1.0,
+               fc: float = 2500.0, tau: float = 0.0038) -> np.ndarray:
+    """Dry pinpoint tick (M9 hats voice): a very short noise burst,
+    hard lowpassed — a click with a body, no hat sizzle. The >6 kHz
+    energy of the old highpassed-hat voice is gone by construction."""
     n = int(dur * SR)
     t = t_axis(n)
-    noise = RNG.standard_normal(n)
-    x = highpass(noise, 7500.0) * np.exp(-t / 0.012)
+    x = lowpass(TICK_RNG.standard_normal(n), fc) * np.exp(-t / tau)
     return x * gain
 
 
-def open_hat() -> np.ndarray:
+def low_knock(f0: float = 205.0, f1: float = 118.0, dur: float = 0.16,
+              gain: float = 1.0, tau: float = 0.052) -> np.ndarray:
+    """Low percussion knock (M9 perc voice): a sine pitch-drop in
+    the 90-210 Hz band with a tiny lowpassed click on the attack —
+    a tom/wood knock, pitched and dry."""
+    n = int(dur * SR)
+    t = t_axis(n)
+    freq = f1 + (f0 - f1) * np.exp(-t / 0.018)
+    phase = 2.0 * np.pi * np.cumsum(freq) / SR
+    x = np.sin(phase) * np.exp(-t / tau)
+    x += 0.22 * np.sin(2.0 * np.pi * 2.0 * freq * t) * np.exp(-t / (tau * 0.5))
+    cn = int(0.006 * SR)
+    ct = t_axis(cn)
+    x[:cn] += 0.30 * np.sin(2.0 * np.pi * 720.0 * ct) * np.exp(-ct / 0.0012)
+    return x * gain
+
+
+def tom_hit() -> np.ndarray:
+    """Low tom for the drive layer: sine drop 170 -> 80 Hz."""
     n = int(0.30 * SR)
     t = t_axis(n)
-    noise = RNG.standard_normal(n)
-    x = highpass(noise, 7000.0) * np.exp(-t / 0.085)
+    freq = 80.0 + 90.0 * np.exp(-t / 0.030)
+    phase = 2.0 * np.pi * np.cumsum(freq) / SR
+    x = np.sin(phase) * (1.0 - np.exp(-t / 0.003)) * np.exp(-t / 0.085)
+    x += 0.25 * np.sin(2.0 * np.pi * 2.0 * freq * t) * np.exp(-t / 0.040)
     return x
 
 
-def shaker() -> np.ndarray:
-    n = int(0.11 * SR)
-    t = t_axis(n)
-    noise = RNG.standard_normal(n)
-    env = (1.0 - np.exp(-t / 0.012)) * np.exp(-t / 0.038)
-    return bandpass(noise, 5200.0, 9800.0) * env
-
-
-def metallic_hit(decay: float = 0.04, gain: float = 1.0) -> np.ndarray:
-    n = int(0.09 * SR)
-    t = t_axis(n)
-    x = np.zeros(n)
-    for f, g in ((6170.0, 0.50), (8450.0, 0.36), (10830.0, 0.26), (14200.0, 0.15)):
-        x += g * np.sin(2.0 * np.pi * f * t) * np.exp(-t / (decay * (0.7 + 0.3 * g)))
-    x += 0.30 * highpass(RNG.standard_normal(n), 9000.0) * np.exp(-t / 0.008)
-    return x * gain
-
-
-def clap() -> np.ndarray:
-    n = int(0.30 * SR)
-    t = t_axis(n)
-    noise = RNG.standard_normal(n)
-    env = np.exp(-t / 0.16)
-    for bt in (0.0, 0.011, 0.023):
-        env += np.exp(-np.abs(t - bt) / 0.0022)
-    return bandpass(noise, 1100.0, 4200.0) * env
-
-
-def bass_note(freq: float, dur: float, accent: float = 1.0) -> np.ndarray:
-    """Dark saw-ish bass: additive harmonics behind a lowpass curve
-    that opens with the note's attack and settles down (resonant
-    character rendered into the sample; no runtime effects)."""
+def pressure_sw(dur: float) -> np.ndarray:
+    """Low noise pressure (M9 drive bed): noise lowpassed to
+    near-sub, swelling in and out over the bar — weight you feel
+    as much as hear. No bright content by construction."""
     n = int(dur * SR)
     t = t_axis(n)
-    fc = (240.0 + 780.0 * np.exp(-t / 0.07)) * (0.8 + 0.45 * accent)
+    x = lowpass(TICK_RNG.standard_normal(n), 220.0)
+    env = np.sin(np.pi * np.arange(n) / max(n - 1, 1)) ** 2
+    env *= 1.0 - 0.35 * np.exp(-t / 0.9)
+    return norm_to(x, 1.0) * env * 0.16
+
+
+def roll_note(freq: float, dur: float, accent: float = 1.0) -> np.ndarray:
+    """One pulse of THE ROLL (M9 bass voice): the low squelch voice
+    with a much lower filter ceiling than the old bass note —
+    additive harmonics behind a curve that starts at ~430 Hz and
+    settles fast, so a 16th-note pulse train reads as continuous
+    low pressure with accent articulation, not separate notes."""
+    n = int(dur * SR)
+    t = t_axis(n)
+    fc = (130.0 + 300.0 * np.exp(-t / 0.028)) * (0.75 + 0.45 * accent)
     out = np.zeros(n)
-    for k in range(1, 15):
+    for k in range(1, 11):
         f = k * freq
-        if f > 9000.0:
+        if f > 4200.0:
             break
         g = (1.0 / k) / (1.0 + (f / fc) ** 2)
         out += g * np.sin(2.0 * np.pi * f * t)
-    env = (1.0 - np.exp(-t / 0.004)) * np.exp(-t / (dur * 0.42))
-    return out * env * (0.55 + 0.45 * accent)
+    env = (1.0 - np.exp(-t / 0.003)) * np.exp(-t / (dur * 0.52))
+    return out * env * (0.5 + 0.5 * accent)
 
 
 def arp_note(freq: float, dur: float = 0.19) -> np.ndarray:
-    """Mid-register dark pluck: sine + soft harmonics, fast decay."""
+    """Dark pluck (M9 voice): sine-weighted with the upper
+    harmonics thinned out and a shorter, duller decay — the shimmer
+    of the old voice is removed; the loop renderer also lowpasses
+    the finished arp stem and plays it an octave down."""
     n = int(dur * SR)
     t = t_axis(n)
     x = (np.sin(2.0 * np.pi * freq * t)
-         + 0.28 * np.sin(2.0 * np.pi * 2.0 * freq * t)
-         + 0.10 * np.sin(2.0 * np.pi * 3.0 * freq * t))
-    env = (1.0 - np.exp(-t / 0.003)) * np.exp(-t / 0.062)
+         + 0.16 * np.sin(2.0 * np.pi * 2.0 * freq * t)
+         + 0.04 * np.sin(2.0 * np.pi * 3.0 * freq * t))
+    env = (1.0 - np.exp(-t / 0.003)) * np.exp(-t / 0.048)
     return x * env
 
 
@@ -254,8 +281,9 @@ def pad_chord(freqs, dur: float) -> np.ndarray:
     for f in freqs:
         for det, g in ((0.9977, 0.5), (1.0023, 0.5)):
             voice = np.zeros(n)
-            for k in range(1, 6):
-                voice += (1.0 / k ** 1.6) * np.sin(2.0 * np.pi * k * f * det * t)
+            for k in range(1, 4):  # M9: top partials cut, stack
+                # favours the fundamental and low-mid partials
+                voice += (1.0 / k ** 2.0) * np.sin(2.0 * np.pi * k * f * det * t)
             out += g * voice
     return out * env
 
@@ -303,65 +331,98 @@ def render_kick_loop() -> np.ndarray:
 
 
 def render_hats_loop() -> np.ndarray:
+    # M9: same rhythm figure, dry pinpoint ticks instead of hats.
+    # The "open" position becomes a longer, duller tick; the closed
+    # accents become very short hard-lowpassed ticks.
     n = n_beats(16)
     buf = np.zeros((n, 2))
-    oh = open_hat()
     accent16 = [0.50, 0.0, 0.85, 0.30, 0.0, 0.0, 0.95, 0.35,
                 0.55, 0.0, 0.80, 0.0, 0.30, 0.90, 0.0, 0.65]
     for beat in range(16):
-        # off-beat open hat (the "and" of every beat)
-        place_st(buf, oh, beat * SPB + SPB // 2, 0.15 if beat % 2 else -0.15)
-        # syncopated closed-hat accents on the 16th grid
+        # off-beat long tick (the "and" of every beat)
+        place_st(buf, tick_burst(dur=0.11, gain=0.9, fc=1900.0,
+                                 tau=0.020),
+                 beat * SPB + SPB // 2, 0.15 if beat % 2 else -0.15)
+        # syncopated tick accents on the 16th grid
         for s in range(4):
             g = accent16[s] * (0.8 + 0.2 * (beat % 4 == 3))
             if g > 0.0:
-                place_st(buf, closed_hat(gain=g),
+                place_st(buf, tick_burst(gain=g),
                          beat * SPB + s * SPB // 4, -0.2 + 0.1 * s)
     return buf
 
 
 def render_perc_loop() -> np.ndarray:
+    # M9: same 10-beat figure, low knocks instead of metal/shaker.
+    # The old "metal" steps become the higher knock (205 -> 118 Hz),
+    # the old "shaker" steps the lower knock (148 -> 92 Hz).
     n = n_beats(10)  # 20 eighth-steps: polyrhythm against 16
     buf = np.zeros((n, 2))
-    metal_steps = {0: 1.0, 3: 0.7, 6: 0.9, 10: 1.0, 13: 0.65, 16: 0.85, 18: 0.6}
-    shaker_steps = {4: 0.8, 9: 0.7, 14: 0.85, 19: 0.75}
-    for step, g in metal_steps.items():
-        place_st(buf, metallic_hit(gain=g), step * SPB // 2, 0.35)
-    for step, g in shaker_steps.items():
-        place_st(buf, shaker() * g, step * SPB // 2, -0.35)
+    knock_steps = {0: 1.0, 3: 0.7, 6: 0.9, 10: 1.0, 13: 0.65, 16: 0.85, 18: 0.6}
+    low_steps = {4: 0.8, 9: 0.7, 14: 0.85, 19: 0.75}
+    for step, g in knock_steps.items():
+        place_st(buf, low_knock(205.0, 118.0, gain=g), step * SPB // 2, 0.35)
+    for step, g in low_steps.items():
+        place_st(buf, low_knock(148.0, 92.0, gain=g * 0.9, tau=0.060),
+                 step * SPB // 2, -0.35)
     return buf
 
 
 def render_drive_loop() -> np.ndarray:
+    # M9: LOW DRIVE — the top of the build is weight, not claps.
+    # Per bar: a low noise-pressure swell; on beats 2 and 4 a low
+    # tom plus a doubled roll-accent burst (three roll pulses on
+    # the bar's root); the old bright end-of-loop ping becomes a
+    # single closing low knock. No clap stack, no hats, no ping.
     n = n_beats(16)
     buf = np.zeros((n, 2))
-    cl = clap()
+    sixteenth = SPB // 4
     for bar in range(4):
+        root = ROOTS[bar]
+        bar_start = bar * 4 * SPB
+        place_st(buf, pressure_sw(n_beats(4) / SR), bar_start, 0.0)
         for beat_in_bar in (1, 3):  # beats 2 and 4 of each bar
-            place_st(buf, cl, (bar * 4 + beat_in_bar) * SPB, 0.0)
-    for step in range(64):  # extra 16th closed hats, driving
-        g = 0.30 + (0.25 if step % 4 == 2 else 0.0)
-        place_st(buf, closed_hat(dur=0.03, gain=g), step * SPB // 4,
-                 0.1 if step % 2 else -0.1)
-    ping_t = t_axis(int(0.25 * SR))
-    ping = (np.sin(2.0 * np.pi * 5870.0 * ping_t)
-            + 0.6 * np.sin(2.0 * np.pi * 8450.0 * ping_t)) * np.exp(-ping_t / 0.07)
-    place_st(buf, ping * 0.20, 15 * SPB + SPB // 2, 0.3)  # last off-beat lift
+            at = bar_start + beat_in_bar * SPB
+            place_st(buf, tom_hit(), at, 0.0)
+            for k in range(3):
+                place_st(buf, roll_note(root, sixteenth / SR * 0.94, 1.0),
+                         at + k * sixteenth, -0.08 if k % 2 else 0.08)
+    place_st(buf, low_knock(170.0, 95.0, dur=0.22, tau=0.070),
+             15 * SPB + SPB // 2, 0.25)  # last off-beat, now a knock
     return buf
 
 
 def render_bass_loop(variant: str) -> np.ndarray:
+    # M9: THE ROLL. A continuous 16th-note pulse train runs under
+    # the whole bar at the bar's root. The variant pattern no longer
+    # places sparse notes; it is the roll's skeleton — its positions
+    # become accented pulses at the pattern's pitch and length,
+    # while the pulses between them roll on at low accent. Variant
+    # character (a: steady drive, b: the octave jump, c: fifth and
+    # octave colour) is preserved exactly in the skeleton.
     n = n_beats(16)
     buf = np.zeros(n)
     pat = BASS_PATTERNS[variant]
+    skeleton = {idx: (semi, length, accent)
+                for idx, semi, length, accent in pat}
     sixteenth = SPB // 4
+    st_sec = sixteenth / SR
     for bar in range(4):
         root = ROOTS[bar]
-        for idx, semi, length, accent in pat:
-            f = root * (2.0 ** (semi / 12.0))
-            note = bass_note(f, length * sixteenth / SR * 0.96, accent)
-            place(buf, note, bar * 4 * SPB + idx * sixteenth)
+        for s in range(16):
+            at = bar * 4 * SPB + s * sixteenth
+            if s in skeleton:
+                semi, length, accent = skeleton[s]
+                f = root * (2.0 ** (semi / 12.0))
+                place(buf, roll_note(f, length * st_sec * 0.94, accent), at)
+            else:
+                place(buf, roll_note(root, st_sec * 0.94, 0.30), at)
     return buf
+
+
+# M9: the arp plays the same patterns an octave down — the
+# melodic movement stays, the register drops into the low-mid.
+ARP_TONES = [[f / 2.0 for f in chord] for chord in CHORD_TONES]
 
 
 def render_arp_loop(variant: str) -> np.ndarray:
@@ -371,10 +432,12 @@ def render_arp_loop(variant: str) -> np.ndarray:
     for step, tone_idx in enumerate(pat):
         if tone_idx < 0:
             continue
-        chord = CHORD_TONES[(step // 6) % 4]
+        chord = ARP_TONES[(step // 6) % 4]
         f = chord[tone_idx]
         pan = -0.3 if step % 2 == 0 else 0.3
         place_st(buf, arp_note(f), step * SPB // 2, pan)
+    buf[:, 0] = lowpass(buf[:, 0], 1700.0)  # M9: stem-level darkening
+    buf[:, 1] = lowpass(buf[:, 1], 1700.0)
     return buf
 
 
@@ -385,7 +448,7 @@ def render_pad_loop() -> np.ndarray:
         chord = CHORD_TONES[seg % 4]
         seg_sig = pad_chord(chord, n_beats(8) / SR)
         place_wrap(buf, seg_sig, seg * n_beats(8))
-    return buf
+    return lowpass(buf, 850.0)  # M9: dark pad — top band removed
 
 
 def render_title_loop() -> np.ndarray:
@@ -597,18 +660,28 @@ SFX_BUILDERS = {
 }
 
 # (name, builder, beats, peak target)
+# M9 peak rebalance (render-side, so the director gains — the mix
+# Chris already judged — stay put): the peaks below were set from
+# before/after stem-RMS measurements so each layer's RMS at its
+# director gain lands near its M3 value. Ticks and knocks carry
+# very different RMS per peak than the bright voices they replace:
+# hats' peak rises (short ticks are RMS-poor; the rhythm must still
+# read), perc/drive/pad peaks fall (knocks, toms and the darker pad
+# are RMS-dense), and the bass roll sits hotter than the old sparse
+# bass on purpose — it is the reference's engine — with the full
+# stack's RMS held inside +/-1.5 dB of the M3 stack.
 MUSIC_BUILDERS = [
     ("kick", render_kick_loop, 16, 0.70),
-    ("hats", render_hats_loop, 16, 0.30),
-    ("perc", render_perc_loop, 10, 0.26),
-    ("drive", render_drive_loop, 16, 0.34),
-    ("bass_a", lambda: render_bass_loop("a"), 16, 0.40),
-    ("bass_b", lambda: render_bass_loop("b"), 16, 0.40),
-    ("bass_c", lambda: render_bass_loop("c"), 16, 0.40),
+    ("hats", render_hats_loop, 16, 0.48),
+    ("perc", render_perc_loop, 10, 0.11),
+    ("drive", render_drive_loop, 16, 0.15),
+    ("bass_a", lambda: render_bass_loop("a"), 16, 0.32),
+    ("bass_b", lambda: render_bass_loop("b"), 16, 0.32),
+    ("bass_c", lambda: render_bass_loop("c"), 16, 0.32),
     ("arp_a", lambda: render_arp_loop("a"), 12, 0.30),
     ("arp_b", lambda: render_arp_loop("b"), 12, 0.30),
     ("arp_c", lambda: render_arp_loop("c"), 12, 0.30),
-    ("pad", render_pad_loop, 32, 0.26),
+    ("pad", render_pad_loop, 32, 0.25),
     ("title", render_title_loop, 16, 0.45),
 ]
 
