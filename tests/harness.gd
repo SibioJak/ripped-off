@@ -3030,5 +3030,71 @@ func _ready() -> void:
 	_check("contact parity: player dies on the Broadside's hull, hull unharmed",
 		died152 and bc.hull_hp == hull152)
 
+	# (153) Hunter velocity continuity (micro-fix): the hunter's
+	# steering is rebuilt from the player's current position every
+	# step, and it used to ASSIGN its velocity outright — every
+	# player jink was an instant full-speed direction snap (the
+	# jitter reported in play). Now the velocity eases toward the
+	# desired vector at HUNTER_STEER_ACCEL. The pirate is driven
+	# directly (not through Main) with a scripted zigzag player
+	# context: the per-frame velocity change must never exceed
+	# the accel bound, however hard the "player" jinks, in either
+	# steering branch. The band it settles into once the player
+	# parks is measured alongside, like-for-like with (104).
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.player.global_position = Vector2(80.0, 80.0)
+	game.player.invincible_t = 1000000000.0
+	var hunt153: Pirate = Pirate.new()
+	game.add_child(hunt153)
+	hunt153.setup("hunter", Vector2(640.0, 400.0))
+	hunt153.player_alive = true
+	var no_cans153: Array[Canister] = []
+	var delta153: float = 1.0 / 60.0
+	var anchor153: Vector2 = Vector2(790.0, 400.0) # orbit range, east
+	for i: int in range(60): # burn off the entry telegraph, parked
+		hunt153.player_pos = anchor153
+		hunt153.player_vel = Vector2.ZERO
+		hunt153.step(delta153, no_cans153)
+	var zig153: Array[Vector2] = [
+		Vector2(1.0, 0.35), Vector2(-0.8, 0.6),
+		Vector2(0.3, -1.0), Vector2(-0.6, -0.75)]
+	var zig_i153: int = 0
+	var prev_v153: Vector2 = hunt153.velocity
+	var max_dv153: float = 0.0
+	var max_ang153: float = 0.0
+	for i: int in range(600): # 10s of hard zigzag at 330 px/s
+		if i % 15 == 0:
+			zig_i153 = (zig_i153 + 1) % zig153.size()
+		var zig_vel153: Vector2 = zig153[zig_i153].normalized() * 330.0
+		anchor153 = Tuning.clamp_inside(
+			anchor153 + zig_vel153 * delta153, 60.0)
+		hunt153.player_pos = anchor153
+		hunt153.player_vel = zig_vel153
+		hunt153.step(delta153, no_cans153)
+		max_dv153 = maxf(max_dv153,
+			(hunt153.velocity - prev_v153).length())
+		if prev_v153.length() > 1.0 and hunt153.velocity.length() > 1.0:
+			max_ang153 = maxf(max_ang153,
+				absf(prev_v153.angle_to(hunt153.velocity)))
+		prev_v153 = hunt153.velocity
+	var min_set153: float = INF
+	var max_set153: float = 0.0
+	for i: int in range(240): # settle against the parked player
+		hunt153.player_pos = anchor153
+		hunt153.player_vel = Vector2.ZERO
+		hunt153.step(delta153, no_cans153)
+		if i >= 120:
+			var d153: float = hunt153.global_position.distance_to(anchor153)
+			min_set153 = minf(min_set153, d153)
+			max_set153 = maxf(max_set153, d153)
+	hunt153.queue_free()
+	_check("hunter velocity continuity: max |dv| %.2f px/s per frame against the %.2f accel bound under a jinking player, max direction change %.3f rad, settled orbit band %.0f-%.0f"
+		% [max_dv153, Tuning.HUNTER_STEER_ACCEL * delta153,
+			max_ang153, min_set153, max_set153],
+		max_dv153 <= Tuning.HUNTER_STEER_ACCEL * delta153 + 0.05
+			and min_set153 >= 110.0 and max_set153 <= 190.0)
+
 	print("HARNESS: %d/%d checks passed" % [_passed, _passed + _failed])
 	get_tree().quit(0 if _failed == 0 else 1)
