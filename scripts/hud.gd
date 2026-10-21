@@ -23,6 +23,7 @@ var boss_bar_active: bool = false # boss waves: hull bar at top center
 var boss_bar_label: String = ""
 var boss_bar_frac: float = 1.0 # hull fraction remaining, 0..1
 var boss_bar_close_bonus: bool = false # player inside the proximity band
+var boss_bar_color: Color = Tuning.COLOR_BOSS # the live capital's theme
 var powerup_id: String = "" # active powerup ("" = none): HUD chip
 var powerup_name: String = ""
 var powerup_color: Color = Color.WHITE
@@ -102,24 +103,25 @@ func _draw_run_hud() -> void:
 		var col: Color = Tuning.COLOR_CANISTER if i < canisters_left \
 			else Color(Tuning.COLOR_TEXT_DIM, 0.3)
 		draw_circle(Vector2(px, 25.0), 4.5, col)
-	# Boss hull bar (boss waves only): the Dreadnought's name and
+	# Boss hull bar (boss waves only): the capital's name and
 	# hull fraction, top center — below the HUD strip, clear of
-	# the boss's station band. The label centers through the
-	# measured _text_center path, never an alignment box.
+	# the boss's station band, drawn in the live capital's theme
+	# colour. The label centers through the measured _text_center
+	# path, never an alignment box.
 	if boss_bar_active:
 		var bcx: float = Tuning.VIEW_W * 0.5
 		var label: String = boss_bar_label
 		if boss_bar_close_bonus:
 			label += " — CLOSE BONUS"
 		_text_center(Vector2(bcx, 66.0), label, 18,
-			Tuning.COLOR_BOSS.lerp(Color.WHITE, 0.3))
+			boss_bar_color.lerp(Color.WHITE, 0.3))
 		var bw: float = 320.0
 		var bx: float = bcx - bw * 0.5
 		draw_rect(Rect2(bx, 72.0, bw, 7.0),
 			Color(Tuning.COLOR_TEXT_DIM, 0.35))
 		draw_rect(Rect2(bx, 72.0,
 			bw * clampf(boss_bar_frac, 0.0, 1.0), 7.0),
-			Tuning.COLOR_BOSS)
+			boss_bar_color)
 
 
 func _draw_title() -> void:

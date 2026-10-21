@@ -31,7 +31,7 @@ var player: Player = null
 var canisters: Array[Canister] = []
 var pirates: Array[Pirate] = []
 var bosses: Array[Boss] = []
-var boss_wave: bool = false # wave % 5 == 0: one Dreadnought, no quota
+var boss_wave: bool = false # wave % 5 == 0: one capital, no quota
 var bullets: Array[Bullet] = []
 var enemy_bullets: Array[EnemyBullet] = []
 var shards: Array[Shard] = []
@@ -191,19 +191,25 @@ func _reset_conversion_state() -> void:
 	_wave_had_thief = false
 
 
-## A boss wave: the director's pirate quota is replaced by the
-## single Dreadnought. The warning banner plays first (~1.5s);
-## the boss spawns when the banner ends (see the physics loop)
-## and descends into its station over BOSS_ENTRY_TIME.
+## A boss wave: the director's pirate quota is replaced by a
+## single capital — the Dreadnought on odd boss numbers, the
+## Broadside on even ones (Tuning.is_broadside_wave). The
+## warning banner plays first (~1.5s); the boss spawns when the
+## banner ends (see the physics loop) and flies in over
+## BOSS_ENTRY_TIME.
 func _begin_boss_wave() -> void:
 	boss_wave = true
 	_boss_pending = true
 	director.stop() # no pirate quota this wave
-	_show_banner("WARNING — " + Tuning.BOSS_NAME)
+	_show_banner("WARNING — " + Tuning.boss_name_for_wave(wave))
 
 
 func spawn_boss(p_wave: int) -> Boss:
-	var b: Boss = Boss.new()
+	var b: Boss = null
+	if Tuning.is_broadside_wave(p_wave):
+		b = Broadside.new()
+	else:
+		b = Boss.new()
 	add_child(b)
 	b.setup(p_wave)
 	b.fired.connect(_on_boss_fired)
@@ -285,15 +291,23 @@ func _on_boss_spark(pos: Vector2) -> void:
 	fx.burst(pos, Color(0.6, 0.62, 0.68, 1.0), LightFx.Size.SPARK)
 
 
+## The theme colour of the capital on the field (a part break
+## reports only its id and position — the breaker is the boss).
+func _live_boss_color() -> Color:
+	if bosses.is_empty():
+		return Tuning.COLOR_BOSS
+	return bosses[0].theme_color()
+
+
 func _on_boss_part_broken(part_id: String, at: Vector2) -> void:
+	var col: Color = _live_boss_color()
 	var paid: int = add_score(Tuning.BOSS_PART_SCORE)
 	_add_rank(Tuning.BOSS_PART_RANK_GAIN)
 	_spawn_shards(at, Tuning.BOSS_PART_SHARDS)
-	_spawn_debris(at, Tuning.COLOR_BOSS, 6)
-	fx.burst(at, Tuning.COLOR_BOSS, LightFx.Size.SMALL)
+	_spawn_debris(at, col, 6)
+	fx.burst(at, col, LightFx.Size.SMALL)
 	sfx.play("death_gunner", at) # metallic crack: a part tearing off
-	spawn_popup(at, "%s +%d" % [part_id.to_upper(), paid],
-		Tuning.COLOR_BOSS)
+	spawn_popup(at, "%s +%d" % [part_id.to_upper(), paid], col)
 
 
 ## The boss's grab arm consumed a canister: the shared steal path.
@@ -307,15 +321,15 @@ func _on_boss_consume(c: Canister) -> void:
 func _on_boss_death_completed(b: Boss) -> void:
 	if bosses.has(b):
 		bosses.erase(b)
-	var paid: int = add_score(Tuning.boss_score_value(b.tier))
+	var paid: int = add_score(b.kill_score_value())
 	_add_rank(Tuning.BOSS_KILL_RANK_GAIN)
 	# The guaranteed drop: a boss kill ALWAYS leaves a powerup,
 	# exempt from the one-on-field cap on random drops.
 	spawn_powerup_drop(b.global_position, roll_powerup_type())
 	_spawn_shards(b.global_position, Tuning.BOSS_SHARD_FOUNTAIN)
-	_spawn_debris(b.global_position, Tuning.COLOR_BOSS, 12)
-	spawn_popup(b.global_position, "DREADNOUGHT DOWN +%d" % paid,
-		Tuning.COLOR_BOSS.lerp(Color.WHITE, 0.3))
+	_spawn_debris(b.global_position, b.theme_color(), 12)
+	spawn_popup(b.global_position, "%s DOWN +%d" % [b.display_name(), paid],
+		b.theme_color().lerp(Color.WHITE, 0.3))
 	b.queue_free()
 	if state == GameState.RUNNING:
 		boss_wave = false
@@ -709,7 +723,7 @@ func _physics_process(delta: float) -> void:
 		player.respawn(_safe_respawn_pos())
 
 	# Boss wave entry: the warning banner plays first; when it
-	# ends, the Dreadnought spawns above the top edge and begins
+	# ends, the capital flies in and begins
 	# its descent.
 	if _boss_pending and _banner_t <= 0.0:
 		_boss_pending = false
@@ -738,7 +752,7 @@ func _physics_process(delta: float) -> void:
 	_resolve_steals_and_leavers()
 	_step_conversion(delta)
 
-	# The Dreadnought (boss waves), stepped with the same context
+	# The capital (boss waves), stepped with the same context
 	# the pirates get: the canister field, the player, its state.
 	var bosses_now: Array[Boss] = bosses.duplicate()
 	for bb: Boss in bosses_now:
@@ -873,7 +887,7 @@ func _bullet_hit(b: Bullet) -> Pirate:
 	return null
 
 
-## Player bullets vs the Dreadnought: parts first, then the hull
+## Player bullets vs the capital: parts first, then the hull
 ## (the boss's hit_circles order). Every connecting bullet pays
 ## tick points through the multiplier and routes the hit_tick
 ## confirm (throttled inside the sfx director) — sustained fire
@@ -1087,7 +1101,7 @@ func _sync_hud() -> void:
 	hud.mode = int(state)
 	hud.paused = paused
 	hud.banner_frac = clampf(_banner_t / Tuning.WAVE_BANNER_TIME, 0.0, 1.0)
-	# Boss hull bar: live while a Dreadnought is on the field.
+	# Boss hull bar: live while a capital is on the field.
 	var live_boss: Boss = null
 	if state == GameState.RUNNING:
 		for bb: Boss in bosses:
@@ -1106,10 +1120,11 @@ func _sync_hud() -> void:
 	hud.boss_bar_close_bonus = live_boss != null \
 		and live_boss.proximity_active
 	if live_boss != null:
-		hud.boss_bar_label = Tuning.BOSS_NAME
+		hud.boss_bar_label = live_boss.display_name()
 		if live_boss.tier > 1:
 			hud.boss_bar_label += " — TIER %d" % live_boss.tier
 		hud.boss_bar_frac = live_boss.hull_frac()
+		hud.boss_bar_color = live_boss.theme_color()
 	hud.queue_redraw()
 
 
