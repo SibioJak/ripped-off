@@ -313,7 +313,11 @@ func _step_shooter_hold(delta: float) -> void:
 ## closes at full speed until it reaches HUNTER_ORBIT_RANGE, then
 ## strafes tangentially around the player (orbit direction rolled
 ## once per spawn, in setup) while a radial correction holds the
-## band. Its fire cycle mirrors the gunner's exactly — charge
+## band. Its velocity eases toward the desired vector at
+## HUNTER_STEER_ACCEL instead of snapping to it: the steering
+## frame is rebuilt from the player's CURRENT position every
+## step, so an outright assignment made every player jink an
+## instant full-speed direction change. Its fire cycle mirrors the gunner's exactly — charge
 ## first, nothing from any other phase, nothing while the player
 ## is down, nothing from off-screen — but the shot itself is LED:
 ## aimed at player_pos + player_vel x time-of-flight x
@@ -326,7 +330,17 @@ func _step_hunter(delta: float) -> void:
 	if player_alive and dist > 0.5:
 		_facing = to_player / dist
 	if dist > Tuning.HUNTER_ORBIT_RANGE:
-		_steer_toward(player_pos, _speed, delta)
+		# Approach: the desired velocity is the chase line at full
+		# speed — exactly what _steer_toward would assign, facing
+		# update included (dist > 1.0 always holds in this branch)
+		# — but the velocity eases onto it at the steer accel
+		# instead of snapping, then integrates here exactly as
+		# _steer_toward integrated it there.
+		_facing = to_player / dist
+		var desired_a: Vector2 = _facing * _speed
+		velocity = velocity.move_toward(desired_a * speed_scale,
+			Tuning.HUNTER_STEER_ACCEL * delta)
+		global_position += velocity * delta
 	else:
 		var radial: Vector2 = Vector2.RIGHT # outward, away from the player
 		if dist > 0.5:
@@ -337,7 +351,8 @@ func _step_hunter(delta: float) -> void:
 		var desired: Vector2 = tangent * _speed + radial * radial_fix
 		if desired.length() > _speed:
 			desired = desired.normalized() * _speed
-		velocity = desired * speed_scale
+		velocity = velocity.move_toward(desired * speed_scale,
+			Tuning.HUNTER_STEER_ACCEL * delta)
 		global_position += velocity * delta
 	global_position = Tuning.clamp_inside(global_position, radius)
 

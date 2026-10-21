@@ -142,6 +142,11 @@ const HUNTER_ORBIT_RANGE: float = 150.0 # pursuit closes to this band, then stra
 const HUNTER_LEAD_FACTOR: float = 0.75 # shots lead the player's velocity by
 	# this fraction of the full time-of-flight lead: a steady strafe
 	# gets punished, a direction change beats the shot
+const HUNTER_STEER_ACCEL: float = 1400.0 # the hunter's velocity eases
+	# toward its desired vector at this rate (px/s^2) instead of
+	# snapping to it outright: its steering is rebuilt from the
+	# player's current position every step, so a direct assignment
+	# turned every player jink into an instant direction snap
 const HUNTER_SHARE_BASE: float = 0.12 # hunter share of spawn rolls from wave 3
 const HUNTER_SHARE_PER_WAVE: float = 0.01 # share grows with the wave
 const HUNTER_SHARE_CAP: float = 0.22
