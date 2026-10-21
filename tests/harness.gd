@@ -184,6 +184,17 @@ func _clear_hostiles() -> void:
 	game.shards.clear()
 
 
+## Drag-governor helper: the lane count the pirate gate reads —
+## canisters DRAGGING whose holder is a Pirate (a boss-held
+## canister never counts).
+func _drag_count_h() -> int:
+	var n: int = 0
+	for c: Canister in game.canisters:
+		if c.state == Canister.State.DRAGGING and c.holder is Pirate:
+			n += 1
+	return n
+
+
 ## M4 helper: land `hits` real player bullets on the boss's hull
 ## (aimed at the hull-circle zone, clear of every part circle).
 func _shoot_hull(b: Boss, hits: int) -> void:
@@ -3095,6 +3106,211 @@ func _ready() -> void:
 			max_ang153, min_set153, max_set153],
 		max_dv153 <= Tuning.HUNTER_STEER_ACCEL * delta153 + 0.05
 			and min_set153 >= 110.0 and max_set153 <= 190.0)
+
+	# (154) Drag governor — the cap and the wait, steal lane:
+	# three grabbers, three loose canisters by the top edge. Two
+	# latch; the third must hold at its canister WITHOUT latching
+	# while both lanes are taken (staying in SEEK, near the latch
+	# ring), and the pirate-held DRAGGING count must never exceed
+	# MAX_CONCURRENT_DRAGS on any frame. When the first steal
+	# completes (canister GONE), the waiting thief latches within
+	# a bounded number of frames.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.player.global_position = Vector2(120.0, 120.0)
+	game.player.invincible_t = 1000000000.0
+	var cans154: Array[Canister] = []
+	var crew154: Array[Pirate] = []
+	for i: int in range(3):
+		var cx154: float = 300.0 + 340.0 * float(i)
+		var can154: Canister = game.canisters[i]
+		can154.set_loose(Vector2.ZERO)
+		can154.global_position = Vector2(cx154, 205.0)
+		cans154.append(can154)
+		crew154.append(game.spawn_pirate("grabber", Vector2(cx154, 255.0)))
+	var max_drag154: int = 0
+	var both_full154: bool = false
+	var waiter154: Pirate = null
+	var waiter_target154: Canister = null
+	var wait_dist_max154: float = 0.0
+	var early_drag154: bool = false
+	var left_seek154: bool = false
+	var gone_frame154: int = -1
+	var latch_frame154: int = -1
+	var frame154: int = 0
+	for i: int in range(1500):
+		await _frames(1)
+		frame154 += 1
+		max_drag154 = maxi(max_drag154, _drag_count_h())
+		if not both_full154 and _drag_count_h() == Tuning.MAX_CONCURRENT_DRAGS:
+			both_full154 = true
+			for p154: Pirate in crew154:
+				if p154.phase == Pirate.Phase.SEEK:
+					waiter154 = p154
+					waiter_target154 = p154.target
+		if both_full154 and waiter154 != null and latch_frame154 < 0:
+			if waiter154.phase != Pirate.Phase.SEEK \
+					and waiter154.phase != Pirate.Phase.DRAG:
+				left_seek154 = true
+			if waiter_target154 != null \
+					and waiter_target154.state == Canister.State.DRAGGING \
+					and gone_frame154 < 0:
+				early_drag154 = true
+			if waiter154.phase == Pirate.Phase.DRAG:
+				latch_frame154 = frame154
+			elif waiter154.target != null:
+				wait_dist_max154 = maxf(wait_dist_max154,
+					waiter154.global_position.distance_to(
+						waiter154.target.global_position))
+		if gone_frame154 < 0:
+			for c154: Canister in cans154:
+				if c154.state == Canister.State.GONE:
+					gone_frame154 = frame154
+		if latch_frame154 > 0:
+			break
+	var latch_latency154: int = -1
+	if gone_frame154 > 0 and latch_frame154 > 0:
+		latch_latency154 = latch_frame154 - gone_frame154
+	_check("drag governor cap: max concurrent pirate drags %d (cap %d), third thief held in SEEK at <= %.0f px from its canister, target never dragged early %s, latched %d frames after the first steal freed a lane"
+		% [max_drag154, Tuning.MAX_CONCURRENT_DRAGS, wait_dist_max154,
+			str(not early_drag154), latch_latency154],
+		max_drag154 == Tuning.MAX_CONCURRENT_DRAGS and both_full154
+			and waiter154 != null and not left_seek154
+			and not early_drag154
+			and wait_dist_max154 <= 40.0
+			and latch_latency154 >= 0 and latch_latency154 <= 15)
+
+	# (155) Drag governor — a kill frees a lane: the same three-
+	# thief staging in mid-arena, where the drags are far too
+	# long to complete inside the setup. One dragging pirate is
+	# killed through Main's real kill path; its canister drops
+	# loose, and the waiting thief latches its own target within
+	# a bounded number of frames, the cap never exceeded.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.player.global_position = Vector2(120.0, 120.0)
+	game.player.invincible_t = 1000000000.0
+	var crew155: Array[Pirate] = []
+	for i: int in range(3):
+		var cx155: float = 300.0 + 340.0 * float(i)
+		var can155: Canister = game.canisters[i]
+		can155.set_loose(Vector2.ZERO)
+		can155.global_position = Vector2(cx155, 400.0)
+		crew155.append(game.spawn_pirate("grabber", Vector2(cx155, 450.0)))
+	var waiter155: Pirate = null
+	var dragger155: Pirate = null
+	for i: int in range(600):
+		await _frames(1)
+		if _drag_count_h() == Tuning.MAX_CONCURRENT_DRAGS:
+			for p155: Pirate in crew155:
+				if p155.phase == Pirate.Phase.SEEK:
+					waiter155 = p155
+				elif p155.phase == Pirate.Phase.DRAG and dragger155 == null:
+					dragger155 = p155
+			if waiter155 != null and dragger155 != null:
+				break
+	var dropped155: Canister = null
+	var drop_state155: int = -1
+	if dragger155 != null:
+		dropped155 = dragger155.held
+		game.kill_pirate(dragger155, false)
+		drop_state155 = dropped155.state
+	var latch_latency155: int = -1
+	var max_drag155: int = 0
+	for i: int in range(300):
+		await _frames(1)
+		max_drag155 = maxi(max_drag155, _drag_count_h())
+		if waiter155 != null and is_instance_valid(waiter155) \
+				and waiter155.phase == Pirate.Phase.DRAG:
+			latch_latency155 = i + 1
+			break
+	_check("drag governor kill: dropped canister released loose %s, waiting thief latched %d frames after the kill, max concurrent pirate drags %d"
+		% [str(drop_state155 == Canister.State.LOOSE), latch_latency155,
+			max_drag155],
+		waiter155 != null and dropped155 != null
+			and drop_state155 == Canister.State.LOOSE
+			and latch_latency155 > 0 and latch_latency155 <= 15
+			and max_drag155 <= Tuning.MAX_CONCURRENT_DRAGS)
+
+	# (156) Drag governor — the boss is exempt: on a live wave-5
+	# boss wave, two pirates fill both lanes and a third waits
+	# beside a spare canister. The Dreadnought's arm must still
+	# complete its grab (a canister DRAGGING under the boss while
+	# both pirate lanes are full — three drags on the field at
+	# once), and when one dragging pirate is killed the waiting
+	# thief must re-latch WHILE the boss still holds, refilling
+	# the pirate lanes to exactly the cap.
+	var b156: Boss = await _start_boss_wave()
+	_clear_hostiles()
+	var crew156: Array[Pirate] = []
+	for i: int in range(3):
+		var cx156: float = 300.0 + 340.0 * float(i)
+		var can156: Canister = game.canisters[i]
+		can156.set_loose(Vector2.ZERO)
+		can156.global_position = Vector2(cx156, 250.0)
+		crew156.append(game.spawn_pirate("grabber", Vector2(cx156, 300.0)))
+	var spare156: Canister = game.canisters[3]
+	spare156.set_loose(Vector2.ZERO)
+	spare156.global_position = Vector2(900.0, 250.0)
+	var max_drag156: int = 0
+	var boss_hold_frame156: int = -1
+	var pirate_at_grab156: int = -1
+	var waiter156: Pirate = null
+	var dragger156: Pirate = null
+	var frame156: int = 0
+	for i: int in range(1200):
+		await _frames(1)
+		frame156 += 1
+		max_drag156 = maxi(max_drag156, _drag_count_h())
+		for c156: Canister in game.canisters:
+			if c156.state == Canister.State.DRAGGING \
+					and c156.holder == b156:
+				boss_hold_frame156 = frame156
+				pirate_at_grab156 = _drag_count_h()
+				break
+		if boss_hold_frame156 > 0:
+			break
+	if boss_hold_frame156 > 0:
+		for p156: Pirate in crew156:
+			if p156.phase == Pirate.Phase.SEEK:
+				waiter156 = p156
+			elif p156.phase == Pirate.Phase.DRAG and dragger156 == null:
+				dragger156 = p156
+	var relatch_latency156: int = -1
+	var boss_held_at_relatch156: bool = false
+	var pirate_at_relatch156: int = -1
+	var total_at_relatch156: int = -1
+	if dragger156 != null and waiter156 != null:
+		game.kill_pirate(dragger156, false)
+		for i: int in range(300):
+			await _frames(1)
+			if is_instance_valid(waiter156) \
+					and waiter156.phase == Pirate.Phase.DRAG:
+				relatch_latency156 = i + 1
+				pirate_at_relatch156 = _drag_count_h()
+				var total156: int = 0
+				var boss_holds156: bool = false
+				for c156b: Canister in game.canisters:
+					if c156b.state == Canister.State.DRAGGING:
+						total156 += 1
+						if c156b.holder == b156:
+							boss_holds156 = true
+				total_at_relatch156 = total156
+				boss_held_at_relatch156 = boss_holds156
+				break
+	_check("drag governor boss exemption: boss grabbed on frame %d with %d pirate drags in flight, waiting thief re-latched %d frames after a kill with the boss still holding %s (pirate drags %d, total drags %d), pirate max %d"
+		% [boss_hold_frame156, pirate_at_grab156, relatch_latency156,
+			str(boss_held_at_relatch156), pirate_at_relatch156,
+			total_at_relatch156, max_drag156],
+		b156 != null and boss_hold_frame156 > 0
+			and pirate_at_grab156 == Tuning.MAX_CONCURRENT_DRAGS
+			and relatch_latency156 > 0 and relatch_latency156 <= 90
+			and boss_held_at_relatch156
+			and pirate_at_relatch156 == Tuning.MAX_CONCURRENT_DRAGS
+			and total_at_relatch156 == Tuning.MAX_CONCURRENT_DRAGS + 1
+			and max_drag156 <= Tuning.MAX_CONCURRENT_DRAGS)
 
 	print("HARNESS: %d/%d checks passed" % [_passed, _passed + _failed])
 	get_tree().quit(0 if _failed == 0 else 1)
