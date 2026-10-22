@@ -195,6 +195,26 @@ func _drag_count_h() -> int:
 	return n
 
 
+## Contested-tow helper: fresh run, canister 0 set loose at `at`
+## (every staging point used below sits far outside its berth's
+## snap radius), the player parked on it, invincible, until the
+## tow latches. Returns the towed canister, or null.
+func _stage_tow(at: Vector2) -> Canister:
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	var can: Canister = game.canisters[0]
+	can.set_loose(Vector2.ZERO)
+	can.global_position = at
+	game.player.global_position = at + Vector2(20.0, 0.0)
+	game.player.invincible_t = 1000000000.0
+	for i: int in range(60):
+		await _frames(1)
+		if game.player.towed == can:
+			break
+	return can if game.player.towed == can else null
+
+
 ## M4 helper: land `hits` real player bullets on the boss's hull
 ## (aimed at the hull-circle zone, clear of every part circle).
 func _shoot_hull(b: Boss, hits: int) -> void:
@@ -3311,6 +3331,276 @@ func _ready() -> void:
 			and pirate_at_relatch156 == Tuning.MAX_CONCURRENT_DRAGS
 			and total_at_relatch156 == Tuning.MAX_CONCURRENT_DRAGS + 1
 			and max_drag156 <= Tuning.MAX_CONCURRENT_DRAGS)
+
+	# (157) Contested tow — a thief targets and latches the
+	# canister the player is towing: the canister stays TOWED
+	# (the wrestle is a link, not a hold), the pirate enters
+	# WRESTLE registered on the canister, and the latch is
+	# announced by the CONTESTED! popup at the canister.
+	var can157: Canister = await _stage_tow(Vector2(300.0, 200.0))
+	var w157: Pirate = game.spawn_pirate("grabber",
+		can157.global_position + Vector2(10.0, 46.0))
+	var latched157: bool = false
+	var popup157: bool = false
+	for i: int in range(400):
+		await _frames(1)
+		if can157.wrestle_count() == 1:
+			latched157 = true
+			for pop157: Dictionary in game._popups:
+				if String(pop157["text"]) == "CONTESTED!":
+					popup157 = true
+			break
+	_check("contested tow latch: thief latched the towed canister %s, CONTESTED! popup shown %s, pirate in WRESTLE %s, canister still TOWED and still the player's tow %s"
+		% [str(latched157), str(popup157),
+			str(w157.phase == Pirate.Phase.WRESTLE
+				and w157.wrestling == can157),
+			str(can157.state == Canister.State.TOWED
+				and game.player.towed == can157)],
+		can157 != null and latched157 and popup157
+			and w157.phase == Pirate.Phase.WRESTLE
+			and w157.wrestling == can157
+			and can157.state == Canister.State.TOWED
+			and game.player.towed == can157)
+
+	# (158) Contested tow — the strain, and muscling it home.
+	# Baseline: the identical parked tow with no wrestler, its
+	# canister settled on the trail point. Contested: the same
+	# staging plus a latched wrestler; after settling, the
+	# canister must sit displaced TOWARD the wrestler's exit
+	# off the baseline point — the visible strain — while still
+	# TOWED. Then the player teleports to the depot ring and
+	# the canister must still slot, wrestlers detached.
+	var can158a: Canister = await _stage_tow(Vector2(300.0, 200.0))
+	await _frames(150)
+	var base158: Vector2 = can158a.global_position
+	var can158: Canister = await _stage_tow(Vector2(300.0, 200.0))
+	var w158: Pirate = game.spawn_pirate("grabber",
+		can158.global_position + Vector2(10.0, 46.0))
+	var latched158: bool = false
+	for i: int in range(400):
+		await _frames(1)
+		if can158.wrestle_count() == 1:
+			latched158 = true
+			break
+	await _frames(240) # settle into the strained equilibrium
+	var axis158: Vector2 = (w158.exit_point - base158).normalized()
+	var strain158: float = (can158.global_position - base158).dot(axis158)
+	_check("contested tow strain: wrestler latched %s, canister displaced %.1f px toward the wrestler's exit off the uncontested trail point (baseline %s, strained %s), still TOWED %s"
+		% [str(latched158), strain158, str(base158),
+			str(can158.global_position),
+			str(can158.state == Canister.State.TOWED
+				and game.player.towed == can158)],
+		latched158 and strain158 >= 8.0 and strain158 <= 60.0
+			and can158.state == Canister.State.TOWED
+			and game.player.towed == can158)
+	game.player.global_position = Tuning.depot_center() + Vector2(30.0, 0.0)
+	var home158: bool = false
+	for i: int in range(400):
+		await _frames(1)
+		if can158.state == Canister.State.IN_SLOT:
+			home158 = true
+			break
+	_check("contested tow muscled home: player slotted the contested canister %s, wrestler list empty %s, wrestler detached back to SEEK %s"
+		% [str(home158), str(can158.wrestle_count() == 0),
+			str(w158.phase != Pirate.Phase.WRESTLE)],
+		home158 and can158.wrestle_count() == 0
+			and w158.phase != Pirate.Phase.WRESTLE)
+
+	# (159) Contested tow — the second latch rips it free: with
+	# one wrestler hanging on, a second thief's latch detaches
+	# the player's tow and hands the canister to the FIRST
+	# wrestler as an ordinary DRAG; the second pirate keeps
+	# nothing and stays in SEEK.
+	var can159: Canister = await _stage_tow(Vector2(300.0, 200.0))
+	var w159a: Pirate = game.spawn_pirate("grabber",
+		can159.global_position + Vector2(10.0, 46.0))
+	var latched159: bool = false
+	for i: int in range(400):
+		await _frames(1)
+		if can159.wrestle_count() == 1:
+			latched159 = true
+			break
+	var w159b: Pirate = game.spawn_pirate("grabber",
+		can159.global_position + Vector2(-46.0, -10.0))
+	var ripped159: bool = false
+	for i: int in range(400):
+		await _frames(1)
+		if can159.state == Canister.State.DRAGGING:
+			ripped159 = true
+			break
+	_check("contested tow rip: second latch ripped the tow %s, canister DRAGGING under the first wrestler %s (held, in DRAG, lanes clear %s), player tow detached %s, second pirate empty-handed in SEEK %s"
+		% [str(ripped159),
+			str(can159.holder == w159a and w159a.held == can159
+				and w159a.phase == Pirate.Phase.DRAG),
+			str(can159.wrestle_count() == 0),
+			str(game.player.towed == null),
+			str(w159b.held == null
+				and w159b.phase == Pirate.Phase.SEEK)],
+		latched159 and ripped159 and can159.holder == w159a
+			and w159a.held == can159
+			and w159a.phase == Pirate.Phase.DRAG
+			and can159.wrestle_count() == 0
+			and game.player.towed == null
+			and w159b.held == null
+			and w159b.phase == Pirate.Phase.SEEK)
+
+	# (160) Contested tow — death while contested, end to end:
+	# the last canister is towed and wrestled; the player dies
+	# through Main's real kill path and the canister does NOT
+	# drop loose — it passes to the wrestler's DRAG, hauls out,
+	# and the run ends. The old exploit (hold the last canister
+	# forever) is closed.
+	var can160: Canister = await _stage_tow(Vector2(640.0, 210.0))
+	for i: int in range(1, 8):
+		game.canisters[i].mark_gone()
+	var w160: Pirate = game.spawn_pirate("grabber",
+		can160.global_position + Vector2(10.0, 46.0))
+	var latched160: bool = false
+	for i: int in range(400):
+		await _frames(1)
+		if can160.wrestle_count() == 1:
+			latched160 = true
+			break
+	game.player.invincible_t = 0.0
+	game.kill_player()
+	var handed160: bool = can160.state == Canister.State.DRAGGING \
+		and can160.holder == w160 and w160.held == can160 \
+		and w160.phase == Pirate.Phase.DRAG
+	var gone160: bool = false
+	for i: int in range(1200):
+		await _frames(1)
+		if can160.state == Canister.State.GONE:
+			gone160 = true
+			break
+	_check("contested tow death: wrestler latched %s, death handed the canister straight to the wrestler's DRAG (never LOOSE) %s, steal completed at the edge %s, run over %s"
+		% [str(latched160), str(handed160), str(gone160),
+			str(game.state == Main.GameState.GAMEOVER)],
+		latched160 and handed160 and gone160
+			and game.state == Main.GameState.GAMEOVER)
+
+	# (161) Contested tow x governor — two pirate drags in
+	# flight fill both lanes, so a thief staged on the towed
+	# canister is REFUSED the wrestle latch: it reaches the
+	# latch ring and waits in SEEK while the lanes stay full
+	# for the whole window.
+	game.start_run()
+	game.director.active = false
+	game.clear_field()
+	game.player.invincible_t = 1000000000.0
+	var tow161: Canister = game.canisters[7]
+	tow161.set_loose(Vector2.ZERO)
+	tow161.global_position = Vector2(1000.0, 200.0)
+	game.player.global_position = Vector2(1020.0, 200.0)
+	var can161a: Canister = game.canisters[1]
+	can161a.set_loose(Vector2.ZERO)
+	can161a.global_position = Vector2(640.0, 500.0)
+	game.spawn_pirate("grabber", Vector2(640.0, 552.0))
+	var can161b: Canister = game.canisters[2]
+	can161b.set_loose(Vector2.ZERO)
+	can161b.global_position = Vector2(380.0, 300.0)
+	game.spawn_pirate("grabber", Vector2(380.0, 352.0))
+	var staged161: bool = false
+	for i: int in range(300):
+		await _frames(1)
+		if _drag_count_h() == Tuning.MAX_CONCURRENT_DRAGS \
+				and game.player.towed == tow161:
+			staged161 = true
+			break
+	var t161: Pirate = game.spawn_pirate("grabber",
+		tow161.global_position + Vector2(-40.0, 30.0))
+	var refused161: bool = true
+	var min_ring161: float = INF
+	for i: int in range(110):
+		await _frames(1)
+		min_ring161 = minf(min_ring161,
+			t161.global_position.distance_to(tow161.global_position))
+		if tow161.wrestle_count() > 0 \
+				or t161.phase == Pirate.Phase.WRESTLE:
+			refused161 = false
+			break
+	_check("governor refuses wrestle: lanes staged full %s, thief reached the latch ring (min %.0f px) and was refused for the whole window %s, towed canister unwrestled and still TOWED %s, both drags still in flight %s"
+		% [str(staged161), min_ring161, str(refused161),
+			str(tow161.wrestle_count() == 0
+				and tow161.state == Canister.State.TOWED),
+			str(_drag_count_h() == Tuning.MAX_CONCURRENT_DRAGS)],
+		staged161 and refused161 and min_ring161 <= 30.0
+			and tow161.wrestle_count() == 0
+			and tow161.state == Canister.State.TOWED
+			and _drag_count_h() == Tuning.MAX_CONCURRENT_DRAGS)
+
+	# (162) Contested tow x governor — one drag plus one
+	# wrestler is also a full house: a second thief at the
+	# contested canister can neither wrestle nor RIP it (the
+	# rip is a latch too, and no lane is free).
+	var can162: Canister = await _stage_tow(Vector2(300.0, 200.0))
+	var can162d: Canister = game.canisters[1]
+	can162d.set_loose(Vector2.ZERO)
+	can162d.global_position = Vector2(640.0, 500.0)
+	game.spawn_pirate("grabber", Vector2(640.0, 552.0))
+	var w162: Pirate = game.spawn_pirate("grabber",
+		can162.global_position + Vector2(10.0, 46.0))
+	var staged162: bool = false
+	for i: int in range(400):
+		await _frames(1)
+		if can162.wrestle_count() == 1 \
+				and _drag_count_h() == 1:
+			staged162 = true
+			break
+	var t162: Pirate = game.spawn_pirate("grabber",
+		can162.global_position + Vector2(-46.0, -10.0))
+	var held162: bool = true
+	var min_ring162: float = INF
+	for i: int in range(110):
+		await _frames(1)
+		min_ring162 = minf(min_ring162,
+			t162.global_position.distance_to(can162.global_position))
+		if can162.state != Canister.State.TOWED \
+				or can162.wrestle_count() != 1 \
+				or _drag_count_h() != 1 \
+				or t162.phase == Pirate.Phase.WRESTLE \
+				or t162.phase == Pirate.Phase.DRAG:
+			held162 = false
+			break
+	_check("governor refuses the rip: drag + wrestler staged %s, second thief reached the ring (min %.0f px) but the house stayed exactly full all window %s (canister TOWED, 1 wrestler, 1 drag)"
+		% [str(staged162), min_ring162, str(held162)],
+		staged162 and held162 and min_ring162 <= 30.0
+			and can162.state == Canister.State.TOWED
+			and can162.wrestle_count() == 1
+			and _drag_count_h() == 1)
+
+	# (163) Contested tow — killing the wrestler frees the tow:
+	# the wrestler dies through the real bullet path, its link
+	# clears, and the canister sails on TOWED, uncontested.
+	var can163: Canister = await _stage_tow(Vector2(300.0, 200.0))
+	var w163: Pirate = game.spawn_pirate("grabber",
+		can163.global_position + Vector2(10.0, 46.0))
+	var latched163: bool = false
+	for i: int in range(400):
+		await _frames(1)
+		if can163.wrestle_count() == 1:
+			latched163 = true
+			break
+	var killed163: bool = false
+	for i: int in range(60):
+		if not is_instance_valid(w163):
+			killed163 = true
+			break
+		if i % 4 == 0:
+			game.spawn_bullet(
+				w163.global_position + Vector2(-30.0, 0.0), Vector2.RIGHT)
+		await _frames(1)
+	if is_instance_valid(w163):
+		await _frames(2)
+		killed163 = not is_instance_valid(w163)
+	_check("killing the wrestler frees the tow: wrestler latched %s then shot dead %s, canister still TOWED by the player %s, wrestler list empty %s"
+		% [str(latched163), str(killed163),
+			str(can163.state == Canister.State.TOWED
+				and game.player.towed == can163),
+			str(can163.wrestle_count() == 0)],
+		latched163 and killed163
+			and can163.state == Canister.State.TOWED
+			and game.player.towed == can163
+			and can163.wrestle_count() == 0)
 
 	print("HARNESS: %d/%d checks passed" % [_passed, _passed + _failed])
 	get_tree().quit(0 if _failed == 0 else 1)
