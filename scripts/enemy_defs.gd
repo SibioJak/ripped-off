@@ -4,7 +4,9 @@ extends RefCounted
 ## scoring and look. Pirate behaviour reads its numbers from here,
 ## so a new class is a new dictionary entry, not new code.
 ## M1 shipped the grabber; M2 adds the gunner through this system;
-## M6 adds the hunter, the direct-challenge class.
+## M6 adds the hunter, the direct-challenge class. The restructure
+## adds the darter (a gunless lunger) and the sniper (a long-range
+## shooter that never converts).
 
 const DEFS: Dictionary = {
 	"grabber": {
@@ -36,6 +38,24 @@ const DEFS: Dictionary = {
 		"color": Color(1.0, 0.62, 0.15, 1.0), # hunter orange (the Rip-Off 2 hunter)
 		"role": "hunter",
 		"fire_interval": 2.6, # seconds between shots at rank 0 (rank scales it)
+	},
+	"darter": {
+		"speed": 240.0, # the fastest approach in the game; the lunge is Tuning
+		"score": 150, # base kill points (before multiplier)
+		"shards": 3, # salvage shards burst on death
+		"radius": 12.0,
+		"color": Color(0.45, 0.95, 0.35, 1.0), # dart green
+		"role": "darter",
+	},
+	"sniper": {
+		"speed": 150.0, # repositioning speed: to its post, and retreating
+		"score": 200, # base kill points (before multiplier)
+		"shards": 4, # salvage shards burst on death
+		"radius": 13.0,
+		"color": Color(0.75, 0.85, 1.0, 1.0), # pale ice blue
+		"role": "sniper",
+		"fire_interval": 3.4, # seconds between shots at rank 0 (rank scales it)
+		"strafe_speed": 40.0, # tangential drift while holding its post
 	},
 }
 

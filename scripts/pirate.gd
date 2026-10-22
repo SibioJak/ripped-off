@@ -17,7 +17,13 @@ extends Node2D
 ## also enter CONVERT (M7): when no getter is working, Main orders
 ## it to reshape — plates fold, a latch claw unfolds, the colour
 ## cross-fades to the grabber's coral — and it comes out of the
-## reshape a thief in the same gunner hull. 1 HP: Main resolves
+## reshape a thief in the same gunner hull. A "darter"
+## (restructure) never looks at a canister either: it hunts the
+## player through an approach / windup / lunge / recover cycle,
+## gunless. A "sniper" (restructure) is the shooter's long-range
+## cousin: it holds a post band measured from the PLAYER, fires
+## on a slow cycle behind a long charge tell, retreats when
+## closed on, and never converts. 1 HP: Main resolves
 ## bullet and ram kills; this script never dies on its own.
 
 signal fired(from: Vector2, dir: Vector2)
@@ -56,7 +62,7 @@ var buzzed_this_drag: bool = false
 
 ## Seconds spent continuously in LEAVE. Main's exit watchdog reads
 ## this: a leaver older than Tuning.EXIT_WATCHDOG_TIME is force-
-## freed, so no pirate can block wave progression indefinitely.
+## freed, so no pirate can park outside the run indefinitely.
 var exit_age: float = 0.0
 
 var _speed: float = 120.0
@@ -78,6 +84,17 @@ var _fire_t: float = 0.0
 var _charging: bool = false
 var _charge_t: float = 0.0
 var _charge_time: float = Tuning.GUNNER_CHARGE_TIME # per role, set in setup
+
+# Darter state (restructure). The pirate Phase stays SEEK for
+# the whole cycle; these beats are private to the role. The
+# lunge direction is captured ONCE, at the end of the windup —
+# the player's position at that instant is where the dart goes,
+# and nothing re-aims it afterwards.
+enum Dart { APPROACH, WINDUP, LUNGE, RECOVER }
+var _dart_state: int = Dart.APPROACH
+var _dart_t: float = 0.0 # time left in WINDUP / RECOVER; lunge clock in LUNGE
+var _dart_dir: Vector2 = Vector2.RIGHT # the locked lunge direction
+var _dart_travel: float = 0.0 # distance flown on the current lunge
 
 # Conversion state (M7). The clock runs only in Phase.CONVERT;
 # _convert_from_color is the gunner's colour at the start of the
@@ -109,8 +126,13 @@ func setup(p_type: String, spawn_pos: Vector2) -> void:
 	_standoff_min = float(def.get("standoff_min", 260.0))
 	_standoff_max = float(def.get("standoff_max", 340.0))
 	_strafe_speed = float(def.get("strafe_speed", 55.0))
-	_charge_time = Tuning.HUNTER_CHARGE_TIME if _role == "hunter" \
-		else Tuning.GUNNER_CHARGE_TIME
+	_charge_time = Tuning.GUNNER_CHARGE_TIME
+	if _role == "hunter":
+		_charge_time = Tuning.HUNTER_CHARGE_TIME
+	elif _role == "darter":
+		_charge_time = Tuning.DARTER_WINDUP_TIME # the windup IS its charge tell
+	elif _role == "sniper":
+		_charge_time = Tuning.SNIPER_CHARGE_TIME
 	_fire_t = _fire_interval * randf_range(0.75, 1.1) # first shot is not instant
 	_strafe_dir = 1.0 if randf() < 0.5 else -1.0
 	var c: Variant = def.get("color", Color(1.0, 0.38, 0.3, 1.0))
@@ -212,6 +234,10 @@ func step(delta: float, canisters: Array[Canister]) -> void:
 				_step_shooter_seek(delta)
 			elif _role == "hunter":
 				_step_hunter(delta)
+			elif _role == "darter":
+				_step_darter(delta)
+			elif _role == "sniper":
+				_step_sniper_seek(delta)
 			else:
 				_step_thief_seek(delta, canisters)
 		Phase.DRAG:
@@ -225,7 +251,10 @@ func step(delta: float, canisters: Array[Canister]) -> void:
 		Phase.WRESTLE:
 			_step_wrestle(delta)
 		Phase.HOLD:
-			_step_shooter_hold(delta)
+			if _role == "sniper":
+				_step_sniper_hold(delta)
+			else:
+				_step_shooter_hold(delta)
 		Phase.LEAVE:
 			_steer_toward(exit_point, _speed, delta)
 	queue_redraw()
@@ -277,9 +306,7 @@ func _step_thief_seek(delta: float, canisters: Array[Canister]) -> void:
 
 ## The drag governor's drag count: how many canisters are
 ## DRAGGING under PIRATE control right now. The holder test is
-## the whole exemption — a canister held by the boss's grab arm
-## (holder is the Boss, not a Pirate) never counts, so the boss
-## neither consumes a pirate lane nor is ever gated by one.
+## the whole rule — only a pirate's haul consumes a lane.
 func _pirate_drag_count(canisters: Array[Canister]) -> int:
 	var n: int = 0
 	for c: Canister in canisters:
@@ -534,6 +561,142 @@ func _step_hunter(delta: float) -> void:
 			_charge_t = _charge_time
 
 
+## Darter: the gunless lunger. Its whole life is a four-beat
+## cycle against the PLAYER — it never targets, latches or
+## drags a canister, and like the hunter it has no exit of its
+## own: it holds its hunt until killed.
+##   APPROACH — steer at the player at full speed until inside
+##     DARTER_TRIGGER_RANGE.
+##   WINDUP — DARTER_WINDUP_TIME of hard deceleration to a
+##     near-stop, wearing the standard charge glow (its
+##     _charge_time IS the windup): the tell that a lunge is
+##     coming. The ship keeps facing the player while it winds.
+##   LUNGE — at the windup's end the direction locks to the
+##     player's position AT THAT INSTANT; the dart flies it at
+##     DARTER_LUNGE_SPEED with no steering until it has
+##     travelled DARTER_LUNGE_DIST (or the time cap bites).
+##   RECOVER — DARTER_RECOVER_TIME of slow drift (velocity
+##     eased under DARTER_RECOVER_MAX_SPEED), then APPROACH
+##     again. The recovery is the punish window.
+func _step_darter(delta: float) -> void:
+	match _dart_state:
+		Dart.APPROACH:
+			_steer_toward(player_pos, _speed, delta)
+			global_position = Tuning.clamp_inside(global_position, radius)
+			if player_alive and global_position.distance_to(player_pos) \
+					<= Tuning.DARTER_TRIGGER_RANGE:
+				_dart_state = Dart.WINDUP
+				_charging = true
+				_charge_t = _charge_time
+		Dart.WINDUP:
+			velocity = velocity.move_toward(Vector2.ZERO, 1800.0 * delta)
+			global_position += velocity * delta
+			global_position = Tuning.clamp_inside(global_position, radius)
+			if player_alive:
+				var to_p: Vector2 = player_pos - global_position
+				if to_p.length() > 1.0:
+					_facing = to_p.normalized()
+			_charge_t -= delta
+			if _charge_t <= 0.0:
+				_charging = false
+				var lock: Vector2 = player_pos - global_position
+				_dart_dir = lock.normalized() if lock.length() > 1.0 \
+					else _facing
+				_facing = _dart_dir
+				velocity = _dart_dir * Tuning.DARTER_LUNGE_SPEED
+				_dart_travel = 0.0
+				_dart_t = 0.0
+				_dart_state = Dart.LUNGE
+		Dart.LUNGE:
+			global_position += velocity * delta
+			global_position = Tuning.clamp_inside(global_position, radius)
+			_dart_travel += Tuning.DARTER_LUNGE_SPEED * delta
+			_dart_t += delta
+			if _dart_travel >= Tuning.DARTER_LUNGE_DIST \
+					or _dart_t >= Tuning.DARTER_LUNGE_MAX_TIME:
+				_dart_t = Tuning.DARTER_RECOVER_TIME
+				_dart_state = Dart.RECOVER
+		Dart.RECOVER:
+			_dart_t -= delta
+			velocity = velocity.move_toward(
+				velocity.limit_length(Tuning.DARTER_RECOVER_MAX_SPEED),
+				1600.0 * delta)
+			global_position += velocity * delta
+			global_position = Tuning.clamp_inside(global_position, radius)
+			if _dart_t <= 0.0:
+				_dart_state = Dart.APPROACH
+
+
+## Sniper entry: fly to a post in the SNIPER band measured from
+## the PLAYER (the gunner's band is measured from the depot —
+## the sniper's whole geometry is relative to its target). The
+## post rides with the player: radially out from the player
+## through the sniper, at the band's middle distance, clamped
+## inside the arena. Arrival (in the band, near the post)
+## settles it into HOLD.
+func _step_sniper_seek(delta: float) -> void:
+	var outward: Vector2 = global_position - player_pos
+	if outward.length() < 1.0:
+		outward = -_facing
+	var mid: float = (Tuning.SNIPER_BAND_MIN + Tuning.SNIPER_BAND_MAX) * 0.5
+	var post: Vector2 = Tuning.clamp_inside(
+		player_pos + outward.normalized() * mid, radius + 18.0)
+	_steer_toward(post, _speed, delta)
+	var dist: float = global_position.distance_to(player_pos)
+	if global_position.distance_to(post) <= 16.0 \
+			and dist >= Tuning.SNIPER_BAND_MIN - 20.0 \
+			and dist <= Tuning.SNIPER_BAND_MAX + 20.0:
+		phase = Phase.HOLD
+
+
+## Sniper at its post: strafe slowly around the PLAYER inside
+## the band, face the player, and run the fire cycle — the
+## gunner's discipline exactly (charge first, nothing while the
+## player is down, nothing from off-screen) on the sniper's own
+## numbers: a 0.8s charge tell (SNIPER_CHARGE_TIME, set in
+## setup) and one AIMED shot at the player's current position —
+## no lead; its counter is the long tell and the bullet's
+## travel time. If the player closes inside SNIPER_RETREAT_DIST
+## the strafe gives way to a direct retreat at full speed until
+## the band is restored.
+func _step_sniper_hold(delta: float) -> void:
+	var to_player: Vector2 = player_pos - global_position
+	var dist: float = to_player.length()
+	var radial: Vector2 = -to_player / dist if dist > 0.5 \
+		else Vector2.RIGHT # outward, away from the player
+	if dist < Tuning.SNIPER_RETREAT_DIST:
+		velocity = radial * _speed * speed_scale
+		global_position += velocity * delta
+	else:
+		var tangent: Vector2 = radial.rotated(PI * 0.5) * _strafe_dir
+		var mid: float = (Tuning.SNIPER_BAND_MIN
+			+ Tuning.SNIPER_BAND_MAX) * 0.5
+		var radial_fix: float = clampf((mid - dist) * 2.0,
+			-_strafe_speed, _strafe_speed)
+		velocity = (tangent * _strafe_speed + radial * radial_fix) \
+			* speed_scale
+		global_position += velocity * delta
+	global_position = Tuning.clamp_inside(global_position, radius)
+	if player_alive and dist > 0.5:
+		_facing = to_player / dist
+
+	if _charging:
+		_charge_t -= delta
+		if _charge_t <= 0.0:
+			_charging = false
+			_fire_t = _fire_interval * fire_interval_scale \
+				* randf_range(0.9, 1.1)
+			if player_alive and Tuning.arena_rect().has_point(global_position):
+				var dir: Vector2 = (player_pos - muzzle_pos()).normalized()
+				if dir != Vector2.ZERO:
+					fired.emit(muzzle_pos(), dir)
+	elif player_alive:
+		_fire_t -= delta
+		if _fire_t <= 0.0:
+			_charging = true
+			_charge_t = _charge_time
+
+
 func _target_valid() -> bool:
 	return target != null and is_instance_valid(target) \
 		and (target.is_available_target() or target.is_wrestle_target())
@@ -588,13 +751,22 @@ func _draw() -> void:
 	var eye: Color = draw_color.lerp(Color.WHITE, 0.7)
 	draw_circle(Vector2(4.0, 0.0), 2.5, eye)
 	if _role == "shooter":
-		# Broadside cheek plates mark the gunner silhouette apart.
+		# Cheek plates mark the gunner silhouette apart.
 		draw_line(Vector2(-2.0, -13.0), Vector2(8.0, -9.0), draw_color, 2.0, true)
 		draw_line(Vector2(-2.0, 13.0), Vector2(8.0, 9.0), draw_color, 2.0, true)
 	if _role == "hunter":
 		# Swept rear fins mark the hunter silhouette apart.
 		draw_line(Vector2(-10.0, -6.0), Vector2(-19.0, -13.0), draw_color, 2.0, true)
 		draw_line(Vector2(-10.0, 6.0), Vector2(-19.0, 13.0), draw_color, 2.0, true)
+	if _role == "darter":
+		# A long nose spike: the lunger reads as a dart.
+		draw_line(Vector2(14.0, 0.0), Vector2(27.0, 0.0), draw_color, 2.0, true)
+		draw_line(Vector2(-12.0, -5.0), Vector2(-20.0, -10.0), draw_color, 2.0, true)
+		draw_line(Vector2(-12.0, 5.0), Vector2(-20.0, 10.0), draw_color, 2.0, true)
+	if _role == "sniper":
+		# A thin sight line forward with a cross tick: the long gun.
+		draw_line(Vector2(10.0, 0.0), Vector2(26.0, 0.0), draw_color, 1.5, true)
+		draw_line(Vector2(21.0, -3.5), Vector2(21.0, 3.5), draw_color, 1.5, true)
 	if _role == "thief":
 		# The latch claw, open at the nose: the getter's standing
 		# mark — natural grabbers and completed converts alike.

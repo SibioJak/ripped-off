@@ -40,6 +40,9 @@ const STREAM_PATHS: Dictionary = {
 	"death_gunner": "res://audio/sfx/death_gunner.wav",
 	"death_hunter": "res://audio/sfx/death_gunner.wav", # M6: the hunter
 	# borrows the gunner's pop (no new renders this milestone)
+	"death_darter": "res://audio/sfx/death_gunner.wav", # the restructure's
+	# darter borrows the same pop, same precedent
+	"death_sniper": "res://audio/sfx/death_gunner.wav", # and the sniper too
 	"hit_tick": "res://audio/sfx/hit_tick.wav",
 	"shard_collect": "res://audio/sfx/shard_collect.wav",
 	"recovery_small": "res://audio/sfx/recovery_small.wav",
@@ -61,8 +64,7 @@ var _next: int = 0
 var _last_shot_ms: int = -100000
 var _last_tick_ms: int = -100000
 
-## Test-visible routing counter (name -> successful plays). The
-## harness asserts hit_tick actually routes on boss hits.
+## Test-visible routing counter (name -> successful plays).
 var play_count: Dictionary = {}
 var _collect_step: int = 0
 var _collect_last_ms: int = -100000

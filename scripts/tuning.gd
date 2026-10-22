@@ -64,9 +64,7 @@ const TELEGRAPH_TIME: float = 0.8 # visible warning before a pirate can move
 const PIRATE_LATCH_DIST: float = 22.0
 const MAX_CONCURRENT_DRAGS: int = 2 # drag governor: at most this many
 	# canisters may be DRAGGING under pirate control at once, so a
-	# swarm can never snatch the whole depot in one moment. The
-	# boss's grab arm is EXEMPT: a boss-held canister never counts
-	# toward this cap, and the boss's own grab is never gated.
+	# swarm can never snatch the whole depot in one moment.
 	# CONTESTED TOW shares these lanes: a pirate wrestling a
 	# player-towed canister holds one lane exactly as a drag does,
 	# and a latch of either kind needs the shared load under cap.
@@ -98,39 +96,56 @@ const MULT_GRACE: float = 2.5 # seconds after a collection before decay resumes
 const MULT_DECAY_RATE: float = 0.45 # multiplier points per second, floor is x1
 const MULT_DEATH_FACTOR: float = 0.5 # death halves the multiplier
 
-# --- Waves ----------------------------------------------------------------------
-const WAVE_BASE_QUOTA: int = 6 # wave quota = BASE + PER_WAVE * wave
-const WAVE_QUOTA_PER_WAVE: int = 3
-const WAVE_MAX_ALIVE_BASE: int = 4 # alive cap = BASE + wave - 1, capped
-const WAVE_MAX_ALIVE_CAP: int = 9
-const SPAWN_INTERVAL: float = 0.85
-const WAVE_BANNER_TIME: float = 1.5
-
-# --- Spawn flow (M8: dealt deck, separation, flow-paced refill) -------------
-## The wave's class mix is dealt from a deck with exact counts,
-## never rolled per spawn (dice clump; decks spread). The deck is
-## built under a run guard so no class deals more than this many
-## times in a row.
-const SPAWN_DECK_MAX_RUN: int = 3
+# --- Continuous director (the restructure: no waves, no bosses) --------------
+## The run has no wave structure: the director deals pirates
+## forever, and the class composition, spawn interval and alive
+## cap are functions of ELAPSED RUN TIME. Classes unlock on a
+## schedule and grow to a plateau share; the grabber takes the
+## remainder and never falls below its floor, so the canister
+## clock is threatened from the first second to the last.
+const COMP_GUNNER_UNLOCK: float = 30.0 # gunner enters at 30s...
+const COMP_GUNNER_RAMP_END: float = 180.0 # ...at full share by 180s
+const COMP_GUNNER_SHARE: float = 0.28
+const COMP_HUNTER_UNLOCK: float = 75.0
+const COMP_HUNTER_RAMP_END: float = 210.0
+const COMP_HUNTER_SHARE: float = 0.14
+const COMP_DARTER_UNLOCK: float = 120.0
+const COMP_DARTER_RAMP_END: float = 240.0
+const COMP_DARTER_SHARE: float = 0.10
+const COMP_SNIPER_UNLOCK: float = 180.0
+const COMP_SNIPER_RAMP_END: float = 300.0
+const COMP_SNIPER_SHARE: float = 0.10
+const COMP_GRABBER_MIN: float = 0.38 # the thief share never falls below this
+const DIRECTOR_SPAWN_START: float = 1.05 # spawn interval at t=0 (pre-rank/flow)
+const DIRECTOR_SPAWN_END: float = 0.48 # ...tightening to this by the ramp end
+const DIRECTOR_SPAWN_RAMP: float = 480.0
+const DIRECTOR_CAP_START: int = 5 # alive cap at t=0 (pre-rank bonus)
+const DIRECTOR_CAP_END: int = 12 # ...rising to this by the ramp end
+const DIRECTOR_CAP_RAMP: float = 480.0
+## Anti-clump (the dealt deck's run guard, kept in sampled form):
+## no class deals more than this many times consecutively while
+## another unlocked class holds a real share.
+const DIRECTOR_MAX_RUN: int = 3
 ## A new spawn point must sit at least this far from the previous
 ## one (the player exclusion still outranks it), so entries walk
 ## around the walls instead of stacking on one edge.
 const SPAWN_MIN_SEPARATION: float = 220.0
 ## Refill pacing: the spawn interval is multiplied by a flow
 ## factor between this (empty field) and 1.0 (field at its alive
-## cap), so a wiped wave refills briskly but still one ship at a
+## cap), so a wiped field refills briskly but still one ship at a
 ## time — flow, never burst.
 const SPAWN_FLOW_MIN_FRAC: float = 0.45
 
 # --- Rank (the intensity engine) -------------------------------------------------
 ## Rank lives 0..1 and is explicit: score-fed play raises it, rank
 ## raises the pressure back. It NEVER falls below a floor that rises
-## slowly with the wave, so the game eases off after a disaster but
-## never goes soft. All scaling goes through the helpers below.
+## slowly with elapsed run time, so the game eases off after a
+## disaster but never goes soft. All scaling goes through the
+## helpers below.
 const RANK_START: float = 0.25 # a fresh run begins at real menace (M6)
-const RANK_FLOOR_BASE: float = 0.15 # floor at wave 1
-const RANK_FLOOR_PER_WAVE: float = 0.035 # floor growth per wave
-const RANK_FLOOR_CAP: float = 0.6 # the floor never rises past this
+const RANK_FLOOR_START: float = 0.20 # floor at t=0
+const RANK_FLOOR_END: float = 0.55 # floor at the ramp end, held after
+const RANK_FLOOR_RAMP: float = 600.0
 const RANK_GAIN_KILL: float = 0.02
 const RANK_GAIN_SHARD: float = 0.004
 const RANK_GAIN_BUZZ: float = 0.01
@@ -145,9 +160,6 @@ const GUNNER_FIRE_MIN_FRAC: float = 0.6 # gunner fire interval x this at rank 1
 
 # --- Gunners (first shooter class; numbers live in enemy_defs.gd) ------------------
 const GUNNER_CHARGE_TIME: float = 0.4 # muzzle glow wind-up before every shot
-const GUNNER_SHARE_MIN: float = 0.25 # gunner share of the quota from wave 2
-const GUNNER_SHARE_PER_WAVE: float = 0.05 # share grows with the wave
-const GUNNER_SHARE_CAP: float = 0.60
 
 # --- Hunters (M6: the direct-challenge class; numbers live in enemy_defs.gd) --------
 ## The hunter never looks at a canister: it closes on the player,
@@ -164,12 +176,9 @@ const HUNTER_STEER_ACCEL: float = 1400.0 # the hunter's velocity eases
 	# snapping to it outright: its steering is rebuilt from the
 	# player's current position every step, so a direct assignment
 	# turned every player jink into an instant direction snap
-const HUNTER_SHARE_BASE: float = 0.12 # hunter share of spawn rolls from wave 3
-const HUNTER_SHARE_PER_WAVE: float = 0.01 # share grows with the wave
-const HUNTER_SHARE_CAP: float = 0.22
-const HUNTER_ALIVE_CAP: int = 2 # concurrent hunters on the field, waves 3-6
-const HUNTER_ALIVE_CAP_LATE: int = 3 # ... from HUNTER_ALIVE_CAP_LATE_WAVE
-const HUNTER_ALIVE_CAP_LATE_WAVE: int = 7
+const HUNTER_ALIVE_CAP: int = 2 # concurrent hunters on the field, early run
+const HUNTER_ALIVE_CAP_LATE: int = 3 # ... from HUNTER_ALIVE_CAP_LATE_TIME
+const HUNTER_ALIVE_CAP_LATE_TIME: float = 240.0
 
 # --- Conversion (M7: the shooter becomes a thief) -----------------------------------
 ## When no getter is working, a gunner stops shooting and RESHAPES
@@ -180,12 +189,10 @@ const HUNTER_ALIVE_CAP_LATE_WAVE: int = 7
 ## the triggers; the pirate owns the timeline.
 const CONVERT_TIME: float = 0.9 # the full reshape, staged in thirds
 const CONVERT_DEAD_AIR_TIME: float = 2.5 # no working thief (after one
-	# has existed this wave) for this long -> the oldest gunner converts
+	# has existed this run) for this long -> the oldest gunner converts
 const CONVERT_NO_STEAL_BACKSTOP: float = 8.0 # no canister dragged for
 	# this long -> a gunner converts even if a thief is out failing
 const CONVERT_COOLDOWN: float = 4.0 # minimum seconds between conversion starts
-const CONVERT_QUOTA_DELAY: float = 0.5 # quota spent + no working thief
-	# for this long -> a gunner converts (covers a getter-free wave)
 
 # --- Enemy bullets ------------------------------------------------------------------
 const ENEMY_BULLET_SPEED: float = 340.0
@@ -282,12 +289,73 @@ static func slot_position(index: int) -> Vector2:
 	return depot_center() + Vector2.from_angle(ang) * SLOT_RING_RADIUS
 
 
-## The rank floor for a wave: rank may bleed down after a death or
-## a steal, but never below this — "never below menace".
-static func rank_floor_for_wave(w: int) -> float:
-	return minf(
-		RANK_FLOOR_BASE + RANK_FLOOR_PER_WAVE * float(maxi(w - 1, 0)),
-		RANK_FLOOR_CAP)
+## The rank floor at a run time: rank may bleed down after a
+## death or a steal, but never below this — "never below menace".
+static func rank_floor_at(t: float) -> float:
+	return lerpf(RANK_FLOOR_START, RANK_FLOOR_END,
+		clampf(t / RANK_FLOOR_RAMP, 0.0, 1.0))
+
+
+## One class's composition share ramp: 0 before its unlock,
+## growing linearly to its plateau at the ramp end, held after.
+static func _share_ramp(t: float, unlock: float, ramp_end: float,
+		plateau: float) -> float:
+	return plateau * clampf((t - unlock) / (ramp_end - unlock), 0.0, 1.0)
+
+
+## The class composition at a run time: shares for every class,
+## summing to 1. The grabber takes whatever the unlocked classes
+## leave, and the others are scaled down proportionally if they
+## would ever push the grabber below COMP_GRABBER_MIN (with the
+## shipped plateaus they total exactly 0.62, so the floor is a
+## guard, not a participant).
+static func composition_at(t: float) -> Dictionary:
+	var gunner: float = _share_ramp(t, COMP_GUNNER_UNLOCK,
+		COMP_GUNNER_RAMP_END, COMP_GUNNER_SHARE)
+	var hunter: float = _share_ramp(t, COMP_HUNTER_UNLOCK,
+		COMP_HUNTER_RAMP_END, COMP_HUNTER_SHARE)
+	var darter: float = _share_ramp(t, COMP_DARTER_UNLOCK,
+		COMP_DARTER_RAMP_END, COMP_DARTER_SHARE)
+	var sniper: float = _share_ramp(t, COMP_SNIPER_UNLOCK,
+		COMP_SNIPER_RAMP_END, COMP_SNIPER_SHARE)
+	var others: float = gunner + hunter + darter + sniper
+	if others > 1.0 - COMP_GRABBER_MIN:
+		var scale: float = (1.0 - COMP_GRABBER_MIN) / others
+		gunner *= scale
+		hunter *= scale
+		darter *= scale
+		sniper *= scale
+		others = 1.0 - COMP_GRABBER_MIN
+	return {
+		"grabber": 1.0 - others,
+		"gunner": gunner,
+		"hunter": hunter,
+		"darter": darter,
+		"sniper": sniper}
+
+
+## The director's base spawn interval at a run time (rank and
+## flow scaling multiply on top of this in the director).
+static func spawn_interval_at(t: float) -> float:
+	return lerpf(DIRECTOR_SPAWN_START, DIRECTOR_SPAWN_END,
+		clampf(t / DIRECTOR_SPAWN_RAMP, 0.0, 1.0))
+
+
+## The director's base alive cap at a run time (the rank bonus
+## adds on top in the director).
+static func alive_cap_at(t: float) -> int:
+	return int(round(lerpf(float(DIRECTOR_CAP_START),
+		float(DIRECTOR_CAP_END),
+		clampf(t / DIRECTOR_CAP_RAMP, 0.0, 1.0))))
+
+
+## Concurrent hunters allowed on the field at a run time: a hard
+## gate on dealing, so the direct-challenge class pressures in
+## ones and twos (threes late) instead of swarming.
+static func hunter_alive_cap_at(t: float) -> int:
+	if t < HUNTER_ALIVE_CAP_LATE_TIME:
+		return HUNTER_ALIVE_CAP
+	return HUNTER_ALIVE_CAP_LATE
 
 
 ## Enemy move-speed scale at a given rank (0.9 at rank 0, 1.25 at 1).
@@ -319,172 +387,30 @@ static func rank_fire_mult(rank: float) -> float:
 	return lerpf(1.0, GUNNER_FIRE_MIN_FRAC, clampf(rank, 0.0, 1.0))
 
 
-# --- Capitals (M4: the Dreadnought; M10: the Broadside) ----------------
-# A boss wave lands every 5th wave; boss NUMBER n = wave / 5 selects
-# the ship (odd n: Dreadnought, even n: Broadside) and each ship's
-# tier advances per APPEARANCE (wave 5 Dread t1, 10 Broadside t1,
-# 15 Dread t2, 20 Broadside t2). Every boss number lives here so
-# the fights retune from one place.
-const BOSS_NAME: String = "DREADNOUGHT"
-const BOSS_HULL_HP: int = 120 # Tier-1 hull pool. Reasoning: the player
-	# lands at most ~6.7 hits/s (1 damage per bullet at the 0.15s fire
-	# interval); realistic sustained accuracy on a strafing capital
-	# while also defending canisters is ~60-75%, so ~4-5 effective DPS
-	# -> a 25-30s engaged fight at tier 1. A real fight, not a burst
-	# kill (pirates are 1 HP) and not a marathon.
-const BOSS_PART_HP: int = 25 # per turret / grab arm: ~4-5s of focused fire
-const BOSS_TIER_HP_STEP: float = 0.6 # hull x (1 + 0.6 x (tier - 1))
-const BOSS_TIER_FIRE_STEP: float = 0.07 # turret interval scale step per tier
-const BOSS_TIER_FIRE_FLOOR: float = 0.65 # turret interval scale never below
-const BOSS_TURRET_INTERVAL: float = 2.2 # seconds between one turret's
-	# shots, tier 1. Each turret runs its own cycle (M4 pressure fix),
-	# so the pair puts out roughly twice the old shared-cadence rate;
-	# tier scaling (BOSS_TIER_FIRE_STEP down to the FLOOR) applies on
-	# this base: t2 = 2.05s, t3 = 1.89s, floor 1.43s reached at t6.
-const BOSS_RADIAL_BASE: int = 14 # ring bullets at an HP threshold, tier 1
-const BOSS_RADIAL_PER_TIER: int = 4 # +4 per tier above 1
-const BOSS_RADIAL_CHARGE_TIME: float = 0.5 # core glow warning before a ring
-const BOSS_SCORE: int = 2500 # base kill value (before multiplier), tier-scaled
-const BOSS_SCORE_TIER_STEP: float = 0.25 # x (1 + 0.25 x (tier - 1))
-const BOSS_PART_SCORE: int = 300 # per broken part, before multiplier
-const BOSS_PART_SHARDS: int = 5
-const BOSS_PART_RANK_GAIN: float = 0.04
-const BOSS_KILL_RANK_GAIN: float = 0.15
-const BOSS_SHARD_FOUNTAIN: int = 25
-const BOSS_TICK_POINTS: int = 5 # per connecting bullet, x multiplier
-const BOSS_PROXIMITY_RADIUS: float = 300.0 # player-to-boss centre distance
-	# at which close-range boss hits earn the proximity bonus
-const BOSS_PROXIMITY_TICK_POINTS: int = 20 # close hit, before multiplier
-const BOSS_PROXIMITY_DAMAGE: int = 2 # close hit damage (far hits deal 1)
-const BOSS_ENTRY_TIME: float = 3.0 # descent from the top edge to station
-const BOSS_STATION_Y: float = 170.0 # the top band; the boss never leaves it
-const BOSS_STRAFE_AMP: float = 200.0
-const BOSS_STRAFE_RATE: float = 0.45
-const BOSS_BOB_AMP: float = 8.0
-const BOSS_BOB_RATE: float = 1.2
-const BOSS_GRAB_TELEGRAPH_TIME: float = 1.0 # targeting-line warning
-const BOSS_GRAB_PULL_TIME: float = 2.0 # latch -> consume travel time
-const BOSS_GRAB_COOLDOWN: float = 6.0
-const BOSS_CONSUME_DIST: float = 26.0
-const BOSS_DEATH_TIME: float = 1.5 # staged spectacle duration
-const COLOR_BOSS: Color = Color(1.0, 0.16, 0.55, 1.0) # hot magenta
-const COLOR_BOSS_BULLET_CORE: Color = Color(1.0, 0.6, 0.85, 1.0)
-const COLOR_BOSS_BULLET_RIM: Color = Color(0.28, 0.03, 0.14, 1.0)
+# --- Darters (the restructure: the lunging class) -------------------
+## The fastest ship in the game and the only one with no gun: it
+## hunts the PLAYER through a four-beat cycle — approach, a
+## visible windup, a locked-line lunge, a slow vulnerable
+## recovery. Numbers live here; the def carries speed/score.
+const DARTER_TRIGGER_RANGE: float = 300.0 # approach ends, windup begins
+const DARTER_WINDUP_TIME: float = 0.45 # decelerate + charge tell
+const DARTER_LUNGE_SPEED: float = 540.0
+const DARTER_LUNGE_DIST: float = 340.0 # lunge ends after this travel...
+const DARTER_LUNGE_MAX_TIME: float = 0.7 # ...or this long, whichever first
+const DARTER_RECOVER_TIME: float = 0.8 # slow drift after the lunge
+const DARTER_RECOVER_MAX_SPEED: float = 60.0 # drift cap while recovering
+const DARTER_ALIVE_CAP: int = 3 # concurrent darters, a hard dealing gate
 
-
-## Boss number for a boss wave: wave 5 -> 1, wave 10 -> 2, ...
-static func boss_number(wave: int) -> int:
-	return maxi(wave / 5, 1)
-
-
-## Even boss numbers field the Broadside; odd ones the Dreadnought.
-static func is_broadside_wave(wave: int) -> bool:
-	return boss_number(wave) % 2 == 0
-
-
-static func boss_name_for_wave(wave: int) -> String:
-	return BROADSIDE_NAME if is_broadside_wave(wave) else BOSS_NAME
-
-
-## The fighting tier of the boss on this wave: per APPEARANCE of
-## its own class (the wave-15 Dreadnought is tier 2, not 3 — the
-## wave-10 slot between its appearances belongs to the Broadside).
-static func boss_tier(wave: int) -> int:
-	var n: int = boss_number(wave)
-	if n % 2 == 1:
-		return (n + 1) / 2
-	return maxi(n / 2, 1)
-
-
-static func boss_hull_hp(tier: int) -> int:
-	return int(round(float(BOSS_HULL_HP)
-		* (1.0 + BOSS_TIER_HP_STEP * float(tier - 1))))
-
-
-static func boss_turret_interval(tier: int) -> float:
-	return BOSS_TURRET_INTERVAL * maxf(BOSS_TIER_FIRE_FLOOR,
-		1.0 - BOSS_TIER_FIRE_STEP * float(tier - 1))
-
-
-static func boss_radial_count(tier: int) -> int:
-	return BOSS_RADIAL_BASE + BOSS_RADIAL_PER_TIER * (tier - 1)
-
-
-static func boss_score_value(tier: int) -> int:
-	return int(round(float(BOSS_SCORE)
-		* (1.0 + BOSS_SCORE_TIER_STEP * float(tier - 1))))
-
-
-# --- Broadside (M10: the second capital, even boss numbers) -------------
-# An orbiting flank gunship: a pure duel — it never touches the
-# canisters. Hull and score scale on the Dreadnought's tier curves
-# (BOSS_TIER_HP_STEP / BOSS_SCORE_TIER_STEP) from bigger bases: it
-# moves, so it is harder to keep guns on, and the fight runs longer.
-const BROADSIDE_NAME: String = "BROADSIDE"
-const BROADSIDE_HULL_HP: int = 140 # tier-1 hull pool (Dreadnought: 120)
-const BROADSIDE_SCORE: int = 3000 # base kill value (Dreadnought: 2500)
-const BROADSIDE_POD_HP: int = 15 # per battery pod (6 pods)
-const BROADSIDE_ENGINE_HP: int = 20 # per engine (2)
-const BROADSIDE_ORBIT_RADIUS: float = 330.0 # around the depot centre
-const BROADSIDE_ORBIT_SPEED: float = 0.32 # rad/s at tier 1: one full
-	# circle in ~19.6s — a moving fight, not a chase
-const BROADSIDE_ORBIT_SPEED_PER_TIER: float = 0.02
-const BROADSIDE_ORBIT_SPEED_CAP: float = 0.42
-const BROADSIDE_VOLLEY_INTERVAL: float = 3.2 # seconds between volleys, tier 1
-const BROADSIDE_VOLLEY_TIER_STEP: float = 0.06 # interval scale step per tier
-const BROADSIDE_VOLLEY_TIER_FLOOR: float = 0.7 # interval scale never below
-const BROADSIDE_VOLLEY_ENGINE_STEP: float = 1.15 # interval x per dead engine
-const BROADSIDE_VOLLEY_CHARGE_TIME: float = 0.5 # presented pods glow first
-const BROADSIDE_AIM_CAP: float = 0.35 # rad the volley bends toward the player
-const BROADSIDE_REVERSE_TIME: float = 1.2 # coming-about turn, no fire
-const BROADSIDE_COOKOFF_DELAY: float = 0.4 # sizzle before a dead flank's fan
-const BROADSIDE_COOKOFF_COUNT: int = 7 # bullets in the cook-off fan
-const BROADSIDE_COOKOFF_SPREAD: float = 0.5 # rad, +/- around the flank normal
-const BROADSIDE_BOW_INTERVAL: float = 2.4 # bow-gun cycle once both flanks die
-const BROADSIDE_BOW_CHARGE_TIME: float = 0.4
-const BROADSIDE_ENGINE_SLOW: float = 0.72 # orbit rate x per dead engine
-const BROADSIDE_DESPERATION_FRAC: float = 0.5 # hull fraction: ONE escalation
-const BROADSIDE_DESPERATION_VOLLEY: float = 0.8 # volley interval x, permanent
-const BROADSIDE_DESPERATION_SPEED: float = 1.15 # orbit rate x, permanent
-const COLOR_BROADSIDE: Color = Color(1.0, 0.5, 0.1, 1.0) # burnt amber —
-	# a different capital read from the Dreadnought's hot magenta
-const COLOR_BROADSIDE_BULLET_CORE: Color = Color(1.0, 0.72, 0.25, 1.0)
-const COLOR_BROADSIDE_BULLET_RIM: Color = Color(0.25, 0.05, 0.02, 1.0)
-
-
-static func broadside_hull_hp(tier: int) -> int:
-	return int(round(float(BROADSIDE_HULL_HP)
-		* (1.0 + BOSS_TIER_HP_STEP * float(tier - 1))))
-
-
-static func broadside_score_value(tier: int) -> int:
-	return int(round(float(BROADSIDE_SCORE)
-		* (1.0 + BOSS_SCORE_TIER_STEP * float(tier - 1))))
-
-
-static func broadside_orbit_speed(tier: int) -> float:
-	return minf(BROADSIDE_ORBIT_SPEED_CAP,
-		BROADSIDE_ORBIT_SPEED
-			+ BROADSIDE_ORBIT_SPEED_PER_TIER * float(tier - 1))
-
-
-static func broadside_volley_interval(tier: int) -> float:
-	return BROADSIDE_VOLLEY_INTERVAL * maxf(BROADSIDE_VOLLEY_TIER_FLOOR,
-		1.0 - BROADSIDE_VOLLEY_TIER_STEP * float(tier - 1))
-
-
-## The proximity rule, measured centre-to-centre at bullet impact.
-## The boundary itself is live: exactly the radius counts as close.
-static func boss_proximity_active(player_pos: Vector2, boss_pos: Vector2) -> bool:
-	return player_pos.distance_to(boss_pos) <= BOSS_PROXIMITY_RADIUS
-
-
-static func boss_tick_points(close: bool) -> int:
-	return BOSS_PROXIMITY_TICK_POINTS if close else BOSS_TICK_POINTS
-
-
-static func boss_hit_damage(close: bool) -> int:
-	return BOSS_PROXIMITY_DAMAGE if close else 1
+# --- Snipers (the restructure: the long-range class) ----------------
+## A shooter that parks FAR out — its band is measured from the
+## PLAYER, not the depot — with a long, bright charge tell on a
+## slow cycle, and a retreat when the player closes on it. It
+## never converts: conversion stays the gunner's road to thief.
+const SNIPER_CHARGE_TIME: float = 0.8 # the long tell before every shot
+const SNIPER_BAND_MIN: float = 420.0 # post band from the player...
+const SNIPER_BAND_MAX: float = 520.0
+const SNIPER_RETREAT_DIST: float = 380.0 # player closer than this: back off
+const SNIPER_ALIVE_CAP: int = 2 # concurrent snipers, a hard dealing gate
 
 
 static func clamp_inside(pos: Vector2, radius: float) -> Vector2:

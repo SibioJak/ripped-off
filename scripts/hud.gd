@@ -1,7 +1,7 @@
 class_name Hud
 extends Node2D
-## All text and screen furniture: the in-run HUD bar, the wave
-## banner, the title screen (with the FULL controls list — every
+## All text and screen furniture: the in-run HUD bar, the run
+## timer, the title screen (with the FULL controls list — every
 ## control the game accepts, house rule), the game-over screen and
 ## the pause note. Main pushes plain values in each frame; this
 ## script only draws, so it never reaches into game state.
@@ -10,20 +10,13 @@ var score: int = 0
 var multiplier: float = 1.0
 var grace_frac: float = 0.0 # 1 = decay grace full, 0 = decaying
 var rank: float = 0.0 # 0..1, the intensity engine, shown and named
-var rank_floor: float = 0.0 # the wave's menace floor, ticked on the bar
-var wave: int = 0
+var rank_floor: float = 0.0 # the run's menace floor, ticked on the bar
+var run_time: float = 0.0 # seconds since the run started
 var canisters_left: int = 8
 var best_score: int = 0
-var best_wave: int = 0
+var best_time: float = 0.0 # the best run's length, seconds
 var mode: int = 0 # mirrors Main.GameState: 0 title, 1 running, 2 game over
 var paused: bool = false
-var banner_text: String = ""
-var banner_frac: float = 0.0 # 1 at banner start, fades to 0
-var boss_bar_active: bool = false # boss waves: hull bar at top center
-var boss_bar_label: String = ""
-var boss_bar_frac: float = 1.0 # hull fraction remaining, 0..1
-var boss_bar_close_bonus: bool = false # player inside the proximity band
-var boss_bar_color: Color = Tuning.COLOR_BOSS # the live capital's theme
 var powerup_id: String = "" # active powerup ("" = none): HUD chip
 var powerup_name: String = ""
 var powerup_color: Color = Color.WHITE
@@ -48,10 +41,6 @@ func _draw() -> void:
 		_draw_run_hud()
 		if paused:
 			_draw_center_lines(["PAUSED"], 44, Tuning.COLOR_TEXT)
-		elif banner_frac > 0.0 and banner_text != "":
-			var col: Color = Color(Tuning.COLOR_TEXT,
-				clampf(banner_frac * 1.6, 0.0, 1.0))
-			_draw_center_lines([banner_text], 40, col)
 	elif mode == MODE_TITLE:
 		_draw_title()
 	elif mode == MODE_GAMEOVER:
@@ -72,7 +61,7 @@ func _draw_run_hud() -> void:
 	draw_rect(Rect2(mx, 40.0, fill, 4.0), Tuning.COLOR_SHARD)
 	draw_rect(Rect2(mx, 47.0, bar_w * grace_frac, 3.0),
 		Color(Tuning.COLOR_DEPOT, 0.8))
-	# RANK: labelled, visible, with the wave floor ticked so the
+	# RANK: labelled, visible, with the run floor ticked so the
 	# player can watch pressure build and see where it cannot fall.
 	var rx: float = 560.0
 	_text(Vector2(rx, 32.0), "RANK", 22, Tuning.COLOR_TEXT)
@@ -84,8 +73,8 @@ func _draw_run_hud() -> void:
 	var floor_x: float = rx + 62.0 + rank_w * clampf(rank_floor, 0.0, 1.0)
 	draw_rect(Rect2(floor_x - 1.0, 17.0, 2.0, 14.0), Tuning.COLOR_TEXT)
 	# Powerup chip (M5): the shared glyph, the name, and a
-	# remaining-time bar — between the RANK bar and the wave
-	# readout, clear of the boss bar's centred label.
+	# remaining-time bar — between the RANK bar and the timer
+	# readout.
 	if powerup_id != "":
 		var chip_x: float = 800.0
 		PowerupDefs.draw_glyph(self, powerup_id,
@@ -96,32 +85,14 @@ func _draw_run_hud() -> void:
 			Color(Tuning.COLOR_TEXT_DIM, 0.35))
 		draw_rect(Rect2(chip_x + 26.0, 38.0,
 			96.0 * clampf(powerup_frac, 0.0, 1.0), 4.0), powerup_color)
-	_text(Vector2(1030.0, 32.0), "WAVE %d" % wave, 22, Tuning.COLOR_TEXT)
+	_text(Vector2(1030.0, 32.0), "TIME %s" % format_time(run_time), 22,
+		Tuning.COLOR_TEXT)
 	# Canister pips.
 	for i: int in range(Tuning.SLOT_COUNT):
 		var px: float = 1130.0 + float(i) * 13.0
 		var col: Color = Tuning.COLOR_CANISTER if i < canisters_left \
 			else Color(Tuning.COLOR_TEXT_DIM, 0.3)
 		draw_circle(Vector2(px, 25.0), 4.5, col)
-	# Boss hull bar (boss waves only): the capital's name and
-	# hull fraction, top center — below the HUD strip, clear of
-	# the boss's station band, drawn in the live capital's theme
-	# colour. The label centers through the measured _text_center
-	# path, never an alignment box.
-	if boss_bar_active:
-		var bcx: float = Tuning.VIEW_W * 0.5
-		var label: String = boss_bar_label
-		if boss_bar_close_bonus:
-			label += " — CLOSE BONUS"
-		_text_center(Vector2(bcx, 66.0), label, 18,
-			boss_bar_color.lerp(Color.WHITE, 0.3))
-		var bw: float = 320.0
-		var bx: float = bcx - bw * 0.5
-		draw_rect(Rect2(bx, 72.0, bw, 7.0),
-			Color(Tuning.COLOR_TEXT_DIM, 0.35))
-		draw_rect(Rect2(bx, 72.0,
-			bw * clampf(boss_bar_frac, 0.0, 1.0), 7.0),
-			boss_bar_color)
 
 
 func _draw_title() -> void:
@@ -131,8 +102,8 @@ func _draw_title() -> void:
 		"Defend the canisters. Feed the multiplier.", 24, Tuning.COLOR_TEXT)
 	if best_score > 0:
 		_text_center(Vector2(cx, 300.0),
-			"BEST  %06d   —   WAVE %d" % [best_score, best_wave], 22,
-			Tuning.COLOR_SHARD)
+			"BEST  %06d   —   TIME %s" % [best_score,
+			format_time(best_time)], 22, Tuning.COLOR_SHARD)
 	var lines: Array[String] = [
 		"CONTROLS",
 		"Move ............ W A S D  /  Left Stick",
@@ -180,19 +151,22 @@ func _draw_gameover() -> void:
 		Tuning.COLOR_STEAL_FLASH)
 	_text_center(Vector2(cx, 366.0), "SCORE  %06d" % score, 30,
 		Tuning.COLOR_TEXT)
-	_text_center(Vector2(cx, 406.0), "WAVE REACHED  %d" % wave, 24,
-		Tuning.COLOR_TEXT)
+	_text_center(Vector2(cx, 406.0), "TIME  %s" % format_time(run_time),
+		24, Tuning.COLOR_TEXT)
 	_text_center(Vector2(cx, 446.0), "BEST  %06d" % best_score, 24,
 		Tuning.COLOR_SHARD)
 	_text_center(Vector2(cx, 516.0), "Fire to play again", 22,
 		Tuning.COLOR_TEXT_DIM)
 
 
-## The first baseline of the centered screen lines (the wave
-## banner, the PAUSED note): the stage's vertical center. The
-## banner used to draw at 0.32 x VIEW_H, up toward the top of
-## the stage, where on a real window it read as almost off
-## screen; the between-wave beat belongs in the middle.
+## Seconds as m:ss (the run timer and the best-time readouts).
+func format_time(seconds: float) -> String:
+	var total: int = int(seconds)
+	return "%d:%02d" % [total / 60, total % 60]
+
+
+## The first baseline of the centered screen lines (the PAUSED
+## note): the stage's vertical center.
 func center_line_y() -> float:
 	return Tuning.VIEW_H * 0.5
 

@@ -11,27 +11,27 @@ enum GameState { TITLE, RUNNING, GAMEOVER }
 
 const SAVE_PATH: String = "user://rippedoff_save.json"
 const SAVE_BEST_SCORE: String = "best_score"
-const SAVE_BEST_WAVE: String = "best_wave"
+const SAVE_BEST_TIME: String = "best_time"
 
 var state: GameState = GameState.TITLE
 var paused: bool = false
 
 # Score state — exactly one home: here. Rank lives here too, with
 # the score it feeds on: gains for kills, shards, buzz and
-# recoveries; bleeds on death and on canisters lost; floored by wave.
+# recoveries; bleeds on death and on canisters lost; floored by
+# run time. The run clock lives here too: seconds since the run
+# started, the director's escalation input.
 var score: int = 0
 var multiplier: float = 1.0
 var mult_grace_t: float = 0.0
 var rank: float = Tuning.RANK_START
-var wave: int = 0
+var run_time: float = 0.0
 var best_score: int = 0
-var best_wave: int = 0
+var best_time: float = 0.0
 
 var player: Player = null
 var canisters: Array[Canister] = []
 var pirates: Array[Pirate] = []
-var bosses: Array[Boss] = []
-var boss_wave: bool = false # wave % 5 == 0: one capital, no quota
 var bullets: Array[Bullet] = []
 var enemy_bullets: Array[EnemyBullet] = []
 var shards: Array[Shard] = []
@@ -43,20 +43,17 @@ var music: MusicDirector = null
 var sfx: SfxDirector = null
 
 var _run_count: int = 0 # seeds the music variant rotation per run
-var _boss_pending: bool = false # warning banner playing; boss spawns at its end
 
 # Conversion watcher state (M7) — see _step_conversion. All of it
-# is per-wave: reset on every wave start, so no trigger state
-# leaks across a wave boundary.
+# is per-run: reset on every run start, so no trigger state
+# leaks across a run boundary.
 var _convert_cooldown_t: float = 0.0 # ticks down from a conversion start
 var _convert_dead_air_t: float = 0.0 # no working thief, after one existed
 var _convert_no_progress_t: float = 0.0 # nobody dragging anything
-var _convert_quota_state_t: float = 0.0 # quota spent + no working thief
-var _wave_had_thief: bool = false # a getter has worked this wave
+var _run_had_thief: bool = false # a getter has worked this run
 
 var _debris: Array[Dictionary] = [] # shrapnel lines {pos, vel, t, dur, color}
 var _popups: Array[Dictionary] = [] # floating text {pos, t, dur, text, color}
-var _banner_t: float = 0.0
 var _font: Font = null
 var _rng: RandomNumberGenerator = RandomNumberGenerator.new()
 # Powerup drops roll on their OWN generator, seeded per run (the
@@ -98,8 +95,8 @@ func _ready() -> void:
 ## Center the whole 1280x800 stage in the real visible canvas.
 ## Stretch aspect "expand" grows the canvas on any window whose
 ## aspect differs from the design view; without this offset the
-## stage hugs the top-left and every screen — the wave banner
-## included — rides high on the physical window. This is a pure
+## stage hugs the top-left and every screen rides high on the
+## physical window. This is a pure
 ## presentation translation of the root node: every gameplay
 ## coordinate is stage-local and untouched, and mouse aim reads
 ## get_global_mouse_position(), which already accounts for it.
@@ -137,9 +134,7 @@ func start_run() -> void:
 	multiplier = 1.0
 	mult_grace_t = 0.0
 	rank = Tuning.RANK_START
-	wave = 1
-	boss_wave = false
-	_boss_pending = false
+	run_time = 0.0
 	_reset_conversion_state()
 	paused = false
 	state = GameState.RUNNING
@@ -148,8 +143,7 @@ func start_run() -> void:
 	music.begin_run(20261018 + _run_count * 7919)
 	_drop_rng.seed = 20261018 + _run_count * 104729
 	sfx.play("ui_start", player.global_position)
-	director.start_wave(wave)
-	_show_banner("WAVE 1")
+	director.start_run()
 	_sync_hud()
 	queue_redraw()
 
@@ -163,69 +157,20 @@ func _game_over() -> void:
 	fx.edge_flash(Tuning.COLOR_STEAL_FLASH)
 	if score > best_score:
 		best_score = score
-		best_wave = wave
+		best_time = run_time
 		_save_best()
 	_sync_hud()
 
 
-func _start_next_wave() -> void:
-	wave += 1
-	_reset_conversion_state()
-	if wave % 5 == 0:
-		_begin_boss_wave()
-	else:
-		director.start_wave(wave)
-		sfx.play("wave_start", Tuning.depot_center())
-		_show_banner("WAVE %d" % wave)
-
-
-## Every conversion trigger clock starts clean each wave: the
+## Every conversion trigger clock starts clean each run: the
 ## cooldown is ready, no dead air or stall has accumulated, and
-## no getter has worked yet — conversion replaces a wave's lost
+## no getter has worked yet — conversion replaces a run's lost
 ## getters, it never pre-empts its first one.
 func _reset_conversion_state() -> void:
 	_convert_cooldown_t = 0.0
 	_convert_dead_air_t = 0.0
 	_convert_no_progress_t = 0.0
-	_convert_quota_state_t = 0.0
-	_wave_had_thief = false
-
-
-## A boss wave: the director's pirate quota is replaced by a
-## single capital — the Dreadnought on odd boss numbers, the
-## Broadside on even ones (Tuning.is_broadside_wave). The
-## warning banner plays first (~1.5s); the boss spawns when the
-## banner ends (see the physics loop) and flies in over
-## BOSS_ENTRY_TIME.
-func _begin_boss_wave() -> void:
-	boss_wave = true
-	_boss_pending = true
-	director.stop() # no pirate quota this wave
-	_show_banner("WARNING — " + Tuning.boss_name_for_wave(wave))
-
-
-func spawn_boss(p_wave: int) -> Boss:
-	var b: Boss = null
-	if Tuning.is_broadside_wave(p_wave):
-		b = Broadside.new()
-	else:
-		b = Boss.new()
-	add_child(b)
-	b.setup(p_wave)
-	b.fired.connect(_on_boss_fired)
-	b.detonated.connect(_on_boss_detonated)
-	b.spark.connect(_on_boss_spark)
-	b.canister_consumed.connect(_on_boss_consume)
-	b.part_broken.connect(_on_boss_part_broken)
-	b.death_completed.connect(_on_boss_death_completed)
-	bosses.append(b)
-	return b
-
-
-func _show_banner(text: String) -> void:
-	_banner_t = Tuning.WAVE_BANNER_TIME
-	if hud != null:
-		hud.banner_text = text
+	_run_had_thief = false
 
 
 ## Free every pirate, bullet and shard (used by start_run; also a
@@ -234,9 +179,6 @@ func clear_field() -> void:
 	for p: Pirate in pirates:
 		p.queue_free()
 	pirates.clear()
-	for bb: Boss in bosses:
-		bb.queue_free()
-	bosses.clear()
 	for b: Bullet in bullets:
 		b.queue_free()
 	bullets.clear()
@@ -274,72 +216,9 @@ func _on_pirate_fired(from: Vector2, dir: Vector2) -> void:
 	spawn_enemy_bullet(from, dir)
 
 
-# --- Boss signal handlers -------------------------------------------------
-
-func _on_boss_fired(from: Vector2, dir: Vector2, core: Color,
-		rim: Color) -> void:
-	spawn_enemy_bullet_tinted(from, dir, core, rim)
-
-
-func _on_boss_detonated(pos: Vector2, size_class: int, color: Color,
-		sound: String) -> void:
-	fx.burst(pos, color, size_class)
-	_spawn_debris(pos, color, 6)
-	sfx.play(sound, pos)
-
-
-func _on_boss_spark(pos: Vector2) -> void:
-	fx.burst(pos, Color(0.6, 0.62, 0.68, 1.0), LightFx.Size.SPARK)
-
-
-## The theme colour of the capital on the field (a part break
-## reports only its id and position — the breaker is the boss).
-func _live_boss_color() -> Color:
-	if bosses.is_empty():
-		return Tuning.COLOR_BOSS
-	return bosses[0].theme_color()
-
-
-func _on_boss_part_broken(part_id: String, at: Vector2) -> void:
-	var col: Color = _live_boss_color()
-	var paid: int = add_score(Tuning.BOSS_PART_SCORE)
-	_add_rank(Tuning.BOSS_PART_RANK_GAIN)
-	_spawn_shards(at, Tuning.BOSS_PART_SHARDS)
-	_spawn_debris(at, col, 6)
-	fx.burst(at, col, LightFx.Size.SMALL)
-	sfx.play("death_gunner", at) # metallic crack: a part tearing off
-	spawn_popup(at, "%s +%d" % [part_id.to_upper(), paid], col)
-
-
-## The boss's grab arm consumed a canister: the shared steal path.
-func _on_boss_consume(c: Canister) -> void:
-	_steal_canister(c)
-
-
-## Death completion: the payout lands here, once, whatever else
-## happened during the sequence (a player death mid-spectacle
-## cancels nothing). The wave then advances from the boss wave.
-func _on_boss_death_completed(b: Boss) -> void:
-	if bosses.has(b):
-		bosses.erase(b)
-	var paid: int = add_score(b.kill_score_value())
-	_add_rank(Tuning.BOSS_KILL_RANK_GAIN)
-	# The guaranteed drop: a boss kill ALWAYS leaves a powerup,
-	# exempt from the one-on-field cap on random drops.
-	spawn_powerup_drop(b.global_position, roll_powerup_type())
-	_spawn_shards(b.global_position, Tuning.BOSS_SHARD_FOUNTAIN)
-	_spawn_debris(b.global_position, b.theme_color(), 12)
-	spawn_popup(b.global_position, "%s DOWN +%d" % [b.display_name(), paid],
-		b.theme_color().lerp(Color.WHITE, 0.3))
-	b.queue_free()
-	if state == GameState.RUNNING:
-		boss_wave = false
-		_start_next_wave()
-
-
-## The shared canister-loss path: a pirate escape or a boss
-## consumption — gone, the stolen sound, a steal burst at the
-## canister, the arena edge flash, and the steal rank bleed.
+## The canister-loss path: a pirate carried it out — gone, the
+## stolen sound, a steal burst at the canister, the arena edge
+## flash, and the steal rank bleed.
 func _steal_canister(c: Canister) -> void:
 	var edge_pos: Vector2 = Tuning.clamp_inside(c.global_position, 2.0)
 	c.mark_gone()
@@ -353,16 +232,6 @@ func spawn_enemy_bullet(from: Vector2, dir: Vector2) -> EnemyBullet:
 	var eb: EnemyBullet = EnemyBullet.new()
 	add_child(eb)
 	eb.setup(from, dir)
-	enemy_bullets.append(eb)
-	return eb
-
-
-## Boss fire: same bullet, per-shot colours (hot magenta family).
-func spawn_enemy_bullet_tinted(from: Vector2, dir: Vector2,
-		core: Color, rim: Color) -> EnemyBullet:
-	var eb: EnemyBullet = EnemyBullet.new()
-	add_child(eb)
-	eb.setup_tinted(from, dir, core, rim)
 	enemy_bullets.append(eb)
 	return eb
 
@@ -421,7 +290,7 @@ func collect_shard() -> void:
 	sfx.play_collect(player.global_position)
 
 
-## Rank moves only through here: clamped to 0..1, and the per-wave
+## Rank moves only through here: clamped to 0..1, and the run-time
 ## floor is re-applied every frame in _step_score.
 func _add_rank(amount: float) -> void:
 	rank = clampf(rank + amount, 0.0, 1.0)
@@ -473,8 +342,8 @@ func _step_score(delta: float) -> void:
 		mult_grace_t = maxf(mult_grace_t - delta, 0.0)
 	elif multiplier > 1.0:
 		multiplier = maxf(1.0, multiplier - Tuning.MULT_DECAY_RATE * delta)
-	# The rank floor: bleeding stops at the wave's menace level.
-	rank = maxf(rank, Tuning.rank_floor_for_wave(wave))
+	# The rank floor: bleeding stops at the run's menace level.
+	rank = maxf(rank, Tuning.rank_floor_at(run_time))
 
 
 # --- Kills and death -------------------------------------------------------------
@@ -561,8 +430,7 @@ func spawn_powerup_drop(at: Vector2, type_id: String) -> Powerup:
 
 ## The random drop on a pirate kill: 12%, and ONLY while no
 ## uncollected pickup sits on the field — one at a time, so a
-## drop is an event, not litter. (The boss guarantee above is
-## exempt; it calls spawn_powerup_drop directly.)
+## drop is an event, not litter.
 func _maybe_roll_powerup_drop(at: Vector2) -> void:
 	if not pickups.is_empty():
 		return
@@ -608,23 +476,24 @@ func _on_pirate_convert_stage(stage: int, p: Pirate) -> void:
 ## TELEGRAPH, SEEK, DRAG or WRESTLE — a natural grabber, or a
 ## convert that finished its reshape. While one works, no
 ## conversion starts.
-## Three triggers, any one sufficient, all gated by the cooldown
+## Two triggers, either sufficient, both gated by the cooldown
 ## and by nobody already reshaping (one at a time):
-##   (a) the quota is spent and no getter works, sustained for
-##       CONVERT_QUOTA_DELAY — a getter-free wave still converts
-##       (this one needs no thief to have existed; it is how a
-##       mop-up field manufactures its own pressure);
-##   (b) dead air: a getter worked this wave, none works now,
+##   (a) dead air: a getter worked this run, none works now,
 ##       sustained for CONVERT_DEAD_AIR_TIME;
-##   (c) the backstop: nothing has been dragged for
+##   (b) the backstop: nothing has been dragged for
 ##       CONVERT_NO_STEAL_BACKSTOP — fires even while a thief is
 ##       out SEEKING and failing to latch; that failure is its
 ##       whole purpose.
+## (The quota-spent trigger died with the wave structure in the
+## restructure: there is no quota to spend. Dead air is now the
+## primary trigger, and it is per-RUN — conversion may only
+## replace lost getters after at least one natural thief has
+## been dealt since the run started.)
 ## The convert is the longest-alive eligible gunner (current role
 ## "shooter" in SEEK or HOLD — SEEK is its entry flight, HOLD is
-## its working post; both are its operational states). Hunters
-## are never eligible: their job is the player, and it does not
-## change. Boss waves field no pirates, so there is nothing to do.
+## its working post; both are its operational states). Hunters,
+## darters and snipers are never eligible: their jobs are the
+## player, and they do not change.
 func _step_conversion(delta: float) -> void:
 	_convert_cooldown_t = maxf(_convert_cooldown_t - delta, 0.0)
 	var working_thief: bool = false
@@ -642,13 +511,13 @@ func _step_conversion(delta: float) -> void:
 				or p.phase == Pirate.Phase.WRESTLE):
 			working_thief = true
 	if working_thief:
-		_wave_had_thief = true
-	# (b) Dead air: only counts while a field exists to convert.
-	if not pirates.is_empty() and not working_thief and _wave_had_thief:
+		_run_had_thief = true
+	# (a) Dead air: only counts while a field exists to convert.
+	if not pirates.is_empty() and not working_thief and _run_had_thief:
 		_convert_dead_air_t += delta
 	else:
 		_convert_dead_air_t = 0.0
-	# (c) Steal progress is a canister DRAGGING, a pirate in
+	# (b) Steal progress is a canister DRAGGING, a pirate in
 	# DRAG, or a wrestler on the player's tow (a steal in
 	# progress against the tow itself); anything else lets the
 	# backstop clock run.
@@ -656,17 +525,10 @@ func _step_conversion(delta: float) -> void:
 		_convert_no_progress_t = 0.0
 	else:
 		_convert_no_progress_t += delta
-	# (a) The quota-spent state, sustained.
-	if director.quota_exhausted() and not working_thief:
-		_convert_quota_state_t += delta
-	else:
-		_convert_quota_state_t = 0.0
 
 	if _convert_cooldown_t > 0.0 or any_converting:
 		return
 	var triggered: bool = false
-	if _convert_quota_state_t >= Tuning.CONVERT_QUOTA_DELAY:
-		triggered = true
 	if _convert_dead_air_t >= Tuning.CONVERT_DEAD_AIR_TIME:
 		triggered = true
 	if _convert_no_progress_t >= Tuning.CONVERT_NO_STEAL_BACKSTOP:
@@ -729,8 +591,6 @@ func _process(delta: float) -> void:
 		fx.advance(delta)
 		_step_debris(delta)
 		_step_popups(delta)
-		if state == GameState.RUNNING and _banner_t > 0.0:
-			_banner_t = maxf(_banner_t - delta, 0.0)
 	if state == GameState.RUNNING and music != null:
 		music.set_rank(rank) # the soundtrack hears the pressure
 	_sync_hud()
@@ -740,6 +600,7 @@ func _process(delta: float) -> void:
 func _physics_process(delta: float) -> void:
 	if state != GameState.RUNNING or paused:
 		return
+	run_time += delta
 	_step_score(delta)
 
 	# Player, including the respawn beat.
@@ -747,21 +608,14 @@ func _physics_process(delta: float) -> void:
 	if not player.alive and player.respawn_t <= 0.0:
 		player.respawn(_safe_respawn_pos())
 
-	# Boss wave entry: the warning banner plays first; when it
-	# ends, the capital flies in and begins
-	# its descent.
-	if _boss_pending and _banner_t <= 0.0:
-		_boss_pending = false
-		spawn_boss(wave)
-
-	# Spawning. The director gates its hunter rolls on how many
-	# hunters are alive right now (its hard alive cap).
-	var hunters_alive: int = 0
+	# Spawning. The director gates its deals on how many of each
+	# class are alive right now (the class alive caps), the run
+	# clock drives its escalation, and Rank breathes on top.
+	var class_alive: Dictionary = {}
 	for hp: Pirate in pirates:
-		if hp.type_name == "hunter":
-			hunters_alive += 1
+		class_alive[hp.type_name] = int(class_alive.get(hp.type_name, 0)) + 1
 	director.step(delta, pirates.size(), player.global_position, rank,
-		hunters_alive)
+		class_alive, run_time)
 
 	# Pirates, then the canisters they drag or trail. Each pirate
 	# gets its per-frame context first: where the player is, whether
@@ -776,12 +630,6 @@ func _physics_process(delta: float) -> void:
 		p.step(delta, canisters)
 	_resolve_steals_and_leavers()
 	_step_conversion(delta)
-
-	# The capital (boss waves), stepped with the same context
-	# the pirates get: the canister field, the player, its state.
-	var bosses_now: Array[Boss] = bosses.duplicate()
-	for bb: Boss in bosses_now:
-		bb.step(delta, canisters, player.global_position, player.alive)
 
 	# Towed canister trails the ship before canister physics runs.
 	if player.towed != null and is_instance_valid(player.towed) \
@@ -820,8 +668,6 @@ func _physics_process(delta: float) -> void:
 			bullets.erase(b)
 			b.queue_free()
 			kill_pirate(hit, true)
-		elif _bullet_hit_boss(b):
-			pass # the boss impact consumed the bullet inside
 
 	_step_enemy_bullets(delta)
 
@@ -855,14 +701,9 @@ func _physics_process(delta: float) -> void:
 			collect_powerup(pk)
 			pk.queue_free()
 
-	# Wave and run endings.
+	# The run's only ending: the last canister is gone.
 	if canisters_remaining() <= 0:
 		_game_over()
-	elif boss_wave:
-		pass # a boss wave ends only via the boss's death completion
-	elif director.quota_exhausted() and pirates.is_empty() \
-			and not _any_dragging():
-		_start_next_wave()
 	queue_redraw()
 
 
@@ -926,55 +767,6 @@ func _bullet_hit(b: Bullet) -> Pirate:
 	return null
 
 
-## Player bullets vs the capital: parts first, then the hull
-## (the boss's hit_circles order). Every connecting bullet pays
-## tick points through the multiplier and routes the hit_tick
-## confirm (throttled inside the sfx director) — sustained fire
-## on a capital is always paying. PROXIMITY BONUS: if the player
-## is within Tuning.BOSS_PROXIMITY_RADIUS of the boss's centre
-## at the moment of impact, the same hit deals double damage
-## and pays the boosted tick — the close, dangerous line is the
-## fast line. PASS-THROUGH WEAK POINTS: a part hit also wounds
-## the hull by the same amount (see the dispatch below), so
-## aiming at the hardware progresses the kill as well as
-## disabling it. A dying boss takes no hits: the spectacle is
-## already running and bullets fly through.
-func _bullet_hit_boss(b: Bullet) -> bool:
-	for boss: Boss in bosses:
-		if boss.phase == Boss.Phase.DYING:
-			continue
-		var circles: Array = boss.hit_circles()
-		for circ_v: Variant in circles:
-			var circ: Array = circ_v as Array
-			var center: Vector2 = circ[0] as Vector2
-			var radius: float = float(circ[1])
-			var what: String = String(circ[2])
-			if b.global_position.distance_to(center) \
-					<= radius + Tuning.BULLET_RADIUS:
-				var at: Vector2 = b.global_position
-				bullets.erase(b)
-				b.queue_free()
-				var close: bool = Tuning.boss_proximity_active(
-					player.global_position, boss.global_position)
-				add_score(Tuning.boss_tick_points(close))
-				sfx.play("hit_tick", at)
-				var amount: int = Tuning.boss_hit_damage(close)
-				if what == "hull":
-					boss.damage_hull(amount)
-				else:
-					# PASS-THROUGH: the part resolves first (a
-					# breaking hit always lands its break payout),
-					# then the hull takes the identical amount
-					# through damage_hull — radial thresholds, the
-					# hull flash and the death sequence behave
-					# exactly as for a hull hit. The tick above was
-					# paid once; pass-through adds no second payment.
-					boss.damage_part(what, amount)
-					boss.damage_hull(amount)
-				return true
-	return false
-
-
 func _resolve_player_contact() -> void:
 	if not player.alive or player.is_invincible():
 		return
@@ -991,21 +783,6 @@ func _resolve_player_contact() -> void:
 				return
 	if not player.alive:
 		return
-	# Capital contact: touching the hull or a live part is a
-	# death at any speed — a capital cannot be ram-killed, and
-	# the contact costs the boss nothing.
-	for bb: Boss in bosses:
-		if bb.phase == Boss.Phase.DYING:
-			continue
-		var circles: Array = bb.hit_circles()
-		for circ_v: Variant in circles:
-			var circ: Array = circ_v as Array
-			var center: Vector2 = circ[0] as Vector2
-			var radius: float = float(circ[1])
-			if player.global_position.distance_to(center) \
-					<= radius + Tuning.PLAYER_RADIUS:
-				kill_player()
-				return
 
 
 func _resolve_tow_and_deposit() -> void:
@@ -1062,7 +839,7 @@ func _resolve_steals_and_leavers() -> void:
 				p.global_position)
 			# Exit watchdog: whatever went wrong out there, a leaver
 			# older than the Tuning limit is freed on the spot — no
-			# pirate may ever park and hold a wave hostage.
+			# pirate may ever park and hold a run hostage.
 			var timed_out: bool = p.exit_age >= Tuning.EXIT_WATCHDOG_TIME
 			if past_boundary or timed_out:
 				if timed_out and not past_boundary:
@@ -1118,7 +895,7 @@ func _load_best() -> void:
 	if typeof(parsed) == TYPE_DICTIONARY:
 		var data: Dictionary = parsed as Dictionary
 		best_score = int(data.get(SAVE_BEST_SCORE, 0))
-		best_wave = int(data.get(SAVE_BEST_WAVE, 0))
+		best_time = float(data.get(SAVE_BEST_TIME, 0.0))
 
 
 func _save_best() -> void:
@@ -1126,7 +903,7 @@ func _save_best() -> void:
 	if f == null:
 		return
 	f.store_string(JSON.stringify({
-		SAVE_BEST_SCORE: best_score, SAVE_BEST_WAVE: best_wave}))
+		SAVE_BEST_SCORE: best_score, SAVE_BEST_TIME: best_time}))
 
 
 # --- HUD sync and arena drawing ------------------------------------------------------------
@@ -1138,20 +915,13 @@ func _sync_hud() -> void:
 	hud.multiplier = multiplier
 	hud.grace_frac = clampf(mult_grace_t / Tuning.MULT_GRACE, 0.0, 1.0)
 	hud.rank = rank
-	hud.rank_floor = Tuning.rank_floor_for_wave(wave)
-	hud.wave = wave
+	hud.rank_floor = Tuning.rank_floor_at(run_time)
+	hud.run_time = run_time
 	hud.canisters_left = canisters_remaining()
 	hud.best_score = best_score
-	hud.best_wave = best_wave
+	hud.best_time = best_time
 	hud.mode = int(state)
 	hud.paused = paused
-	hud.banner_frac = clampf(_banner_t / Tuning.WAVE_BANNER_TIME, 0.0, 1.0)
-	# Boss hull bar: live while a capital is on the field.
-	var live_boss: Boss = null
-	if state == GameState.RUNNING:
-		for bb: Boss in bosses:
-			live_boss = bb
-			break
 	# Powerup chip: the active powerup's id, name, colour and
 	# remaining-timer fraction, fed from the Player's state.
 	hud.powerup_id = player.powerup_id
@@ -1161,15 +931,6 @@ func _sync_hud() -> void:
 		hud.powerup_frac = player.powerup_fraction()
 	else:
 		hud.powerup_frac = 0.0
-	hud.boss_bar_active = live_boss != null
-	hud.boss_bar_close_bonus = live_boss != null \
-		and live_boss.proximity_active
-	if live_boss != null:
-		hud.boss_bar_label = live_boss.display_name()
-		if live_boss.tier > 1:
-			hud.boss_bar_label += " — TIER %d" % live_boss.tier
-		hud.boss_bar_frac = live_boss.hull_frac()
-		hud.boss_bar_color = live_boss.theme_color()
 	hud.queue_redraw()
 
 
