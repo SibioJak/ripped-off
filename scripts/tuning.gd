@@ -103,9 +103,13 @@ const MULT_DEATH_FACTOR: float = 0.5 # death halves the multiplier
 ## schedule and grow to a plateau share; the grabber takes the
 ## remainder and never falls below its floor, so the canister
 ## clock is threatened from the first second to the last.
-const COMP_GUNNER_UNLOCK: float = 30.0 # gunner enters at 30s...
-const COMP_GUNNER_RAMP_END: float = 180.0 # ...at full share by 180s
-const COMP_GUNNER_SHARE: float = 0.28
+## The rebalance (play verdict: the stream was a relentless red
+## conveyor with no room to retrieve) deals gunners from the
+## first second — pressure on the PLAYER, not the clock — and
+## lets the grabber share ease down as the mix fills in.
+const COMP_GUNNER_START_SHARE: float = 0.40 # gunner share at t=0...
+const COMP_GUNNER_SHARE: float = 0.30 # ...easing to this plateau...
+const COMP_GUNNER_RAMP_END: float = 180.0 # ...by 180s
 const COMP_HUNTER_UNLOCK: float = 75.0
 const COMP_HUNTER_RAMP_END: float = 210.0
 const COMP_HUNTER_SHARE: float = 0.14
@@ -115,11 +119,11 @@ const COMP_DARTER_SHARE: float = 0.10
 const COMP_SNIPER_UNLOCK: float = 180.0
 const COMP_SNIPER_RAMP_END: float = 300.0
 const COMP_SNIPER_SHARE: float = 0.10
-const COMP_GRABBER_MIN: float = 0.38 # the thief share never falls below this
-const DIRECTOR_SPAWN_START: float = 1.05 # spawn interval at t=0 (pre-rank/flow)
-const DIRECTOR_SPAWN_END: float = 0.48 # ...tightening to this by the ramp end
+const COMP_GRABBER_MIN: float = 0.30 # the thief share never falls below this
+const DIRECTOR_SPAWN_START: float = 1.35 # spawn interval at t=0 (pre-rank/flow)
+const DIRECTOR_SPAWN_END: float = 0.55 # ...tightening to this by the ramp end
 const DIRECTOR_SPAWN_RAMP: float = 480.0
-const DIRECTOR_CAP_START: int = 5 # alive cap at t=0 (pre-rank bonus)
+const DIRECTOR_CAP_START: int = 4 # alive cap at t=0 (pre-rank bonus)
 const DIRECTOR_CAP_END: int = 12 # ...rising to this by the ramp end
 const DIRECTOR_CAP_RAMP: float = 480.0
 ## Anti-clump (the dealt deck's run guard, kept in sampled form):
@@ -135,6 +139,14 @@ const SPAWN_MIN_SEPARATION: float = 220.0
 ## cap), so a wiped field refills briskly but still one ship at a
 ## time — flow, never burst.
 const SPAWN_FLOW_MIN_FRAC: float = 0.45
+## The tow window (the rebalance): while the player is towing a
+## canister home, the director deals NO new grabbers — the field
+## already out keeps hunting, but the conveyor stops adding
+## clock-threats until the tow ends — and its spawn interval is
+## stretched by this factor. The retrieve is the game's natural
+## breath, earned by doing it; the window ends the instant the
+## tow does, with no catch-up burst and no banked deals.
+const TOW_WINDOW_INTERVAL_SCALE: float = 1.5
 
 # --- Rank (the intensity engine) -------------------------------------------------
 ## Rank lives 0..1 and is explicit: score-fed play raises it, rank
@@ -303,15 +315,24 @@ static func _share_ramp(t: float, unlock: float, ramp_end: float,
 	return plateau * clampf((t - unlock) / (ramp_end - unlock), 0.0, 1.0)
 
 
+## The gunner's share: it deals from the first second at
+## COMP_GUNNER_START_SHARE and eases DOWN to its plateau by
+## COMP_GUNNER_RAMP_END (the rebalance: gunner pressure is heavy
+## early, when it teaches the player to move, and makes room as
+## the specialist classes unlock).
+static func _gunner_share_at(t: float) -> float:
+	return lerpf(COMP_GUNNER_START_SHARE, COMP_GUNNER_SHARE,
+		clampf(t / COMP_GUNNER_RAMP_END, 0.0, 1.0))
+
+
 ## The class composition at a run time: shares for every class,
 ## summing to 1. The grabber takes whatever the unlocked classes
 ## leave, and the others are scaled down proportionally if they
 ## would ever push the grabber below COMP_GRABBER_MIN (with the
-## shipped plateaus they total exactly 0.62, so the floor is a
-## guard, not a participant).
+## shipped plateaus they total 0.64, so the floor is a guard,
+## not a participant).
 static func composition_at(t: float) -> Dictionary:
-	var gunner: float = _share_ramp(t, COMP_GUNNER_UNLOCK,
-		COMP_GUNNER_RAMP_END, COMP_GUNNER_SHARE)
+	var gunner: float = _gunner_share_at(t)
 	var hunter: float = _share_ramp(t, COMP_HUNTER_UNLOCK,
 		COMP_HUNTER_RAMP_END, COMP_HUNTER_SHARE)
 	var darter: float = _share_ramp(t, COMP_DARTER_UNLOCK,
