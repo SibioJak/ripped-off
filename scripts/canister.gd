@@ -25,6 +25,17 @@ var slot_pos: Vector2 = Vector2.ZERO
 var holder: Node2D = null # pirate or boss (DRAGGING), player (TOWED)
 var tow_start_pos: Vector2 = Vector2.ZERO # latched here; pays the recovery scale
 
+## CONTESTED TOW: the pirates wrestling THIS canister while the
+## player tows it. Not a state — the canister stays TOWED and the
+## player keeps it; a wrestler is a link, registered here so the
+## tow physics (Main) and the drag governor (Pirate) both read
+## the same list. At most one link is live in steady state: a
+## second latch on a contested canister rips the tow loose on
+## the spot (see Pirate._try_wrestle_latch), and a player death
+## hands the canister to the first wrestler — both go through
+## begin_drag_from_tow(), which clears the list.
+var wrestlers: Array[Node2D] = []
+
 var _slotting: bool = false
 var _glide_from: Vector2 = Vector2.ZERO
 var _glide_t: float = 0.0
@@ -39,6 +50,7 @@ func setup(p_slot_index: int, p_slot_pos: Vector2) -> void:
 	state = State.IN_SLOT
 	velocity = Vector2.ZERO
 	holder = null
+	wrestlers.clear()
 	_slotting = false
 	visible = true
 	_spin = randf() * TAU
@@ -54,12 +66,37 @@ func is_available_target() -> bool:
 	return (state == State.IN_SLOT or state == State.LOOSE) and not _slotting
 
 
+## A thief may also wrestle a canister the PLAYER is towing
+## (contested tow): TOWED, not mid-glide into a berth, and
+## actually held — the state machine's doors always set the
+## holder on a genuine tow (begin_tow), so a TOWED flag with
+## no holder is not a tow anyone can wrestle. The boss's grab
+## arm never uses this door — it reads is_available_target()
+## only, so a towed canister is invisible to it.
+func is_wrestle_target() -> bool:
+	return state == State.TOWED and not _slotting and holder != null
+
+
+func wrestle_count() -> int:
+	return wrestlers.size()
+
+
+func add_wrestler(by: Node2D) -> void:
+	if not wrestlers.has(by):
+		wrestlers.append(by)
+
+
+func remove_wrestler(by: Node2D) -> void:
+	wrestlers.erase(by)
+
+
 # --- Transitions (the only doors between states) ----------------------
 
 func set_loose(p_velocity: Vector2) -> void:
 	state = State.LOOSE
 	velocity = p_velocity
 	holder = null
+	wrestlers.clear()
 	_slotting = false
 
 
@@ -75,6 +112,23 @@ func begin_drag(by: Node2D) -> bool:
 func release_from_drag(momentum: Vector2) -> void:
 	if state == State.DRAGGING:
 		set_loose(momentum)
+
+
+## The contested tow resolves AGAINST the player: a second
+## wrestler's latch ripping the tow loose, or the player's death
+## handing its haul to the first wrestler. The canister passes
+## straight from TOWED to DRAGGING under `by` — it never touches
+## LOOSE, so the respawn race the exploit lived on never starts.
+## The wrestler list clears: the winner's link is now the hold
+## itself (holder), and no second link can exist past this door.
+func begin_drag_from_tow(by: Node2D) -> bool:
+	if state != State.TOWED:
+		return false
+	state = State.DRAGGING
+	holder = by
+	wrestlers.clear()
+	velocity = Vector2.ZERO
+	return true
 
 
 func begin_tow(by: Node2D) -> bool:
@@ -99,6 +153,7 @@ func begin_slot_glide() -> void:
 		return
 	_slotting = true
 	holder = null
+	wrestlers.clear()
 	velocity = Vector2.ZERO
 	_glide_from = global_position
 	_glide_t = 0.0
@@ -110,6 +165,7 @@ func begin_slot_glide() -> void:
 func mark_gone() -> void:
 	state = State.GONE
 	holder = null
+	wrestlers.clear()
 	_slotting = false
 	velocity = Vector2.ZERO
 	visible = false

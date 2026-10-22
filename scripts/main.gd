@@ -265,6 +265,7 @@ func spawn_pirate(type_name: String, pos: Vector2) -> Pirate:
 	p.setup(type_name, pos)
 	p.fired.connect(_on_pirate_fired)
 	p.convert_stage.connect(_on_pirate_convert_stage.bind(p))
+	p.wrestle_started.connect(_on_pirate_wrestle_started.bind(p))
 	pirates.append(p)
 	return p
 
@@ -482,6 +483,8 @@ func kill_pirate(p: Pirate, award: bool) -> void:
 	if not pirates.has(p):
 		return
 	pirates.erase(p)
+	if p.wrestling != null:
+		p.detach_wrestle() # a dead wrestler lets go; the tow sails on
 	if p.held != null and is_instance_valid(p.held):
 		p.held.release_from_drag(p.velocity)
 	_spawn_shards(p.global_position, p.shard_count())
@@ -513,6 +516,17 @@ func kill_player() -> void:
 	fx.edge_flash(Tuning.COLOR_STEAL_FLASH)
 	_spawn_debris(player.global_position, Tuning.COLOR_PLAYER, 10)
 	_cancel_enemy_bullets() # death protocol: hostile fire becomes salvage
+	# CONTESTED TOW: death while a wrestler hangs on the tow hands
+	# the canister to that wrestler BEFORE the tow drops — it
+	# passes straight to a pirate DRAG and out, never LOOSE, so
+	# holding the last canister can no longer pause the clock.
+	# (Uncontested, die() drops the tow LOOSE exactly as before.)
+	if player.towed != null and is_instance_valid(player.towed) \
+			and player.towed.state == Canister.State.TOWED \
+			and player.towed.wrestle_count() > 0:
+		var first_w: Node2D = player.towed.wrestlers[0]
+		if first_w is Pirate and is_instance_valid(first_w):
+			(first_w as Pirate).take_over_wrestle()
 	player.die() # drops any tow; the canister goes LOOSE
 	multiplier = maxf(1.0, multiplier * Tuning.MULT_DEATH_FACTOR)
 	_add_rank(-Tuning.RANK_BLEED_DEATH)
@@ -571,6 +585,13 @@ func collect_powerup(pk: Powerup) -> void:
 	sfx.play("recovery_small", at, 1.3)
 
 
+## A wrestle latch lands on the player's tow (contested tow):
+## one announcement at the canister, in the pirate's own colour,
+## through the ordinary popup path.
+func _on_pirate_wrestle_started(c: Canister, p: Pirate) -> void:
+	spawn_popup(c.global_position, "CONTESTED!", p.draw_color)
+
+
 ## Reshape beats (M7): a spark burst at the pirate on every
 ## stage, and the mechanical clunk when the claw locks in at
 ## completion — the same one-shot the tow latch uses.
@@ -584,8 +605,9 @@ func _on_pirate_convert_stage(stage: int, p: Pirate) -> void:
 
 ## The conversion watcher (M7). Conversion replaces lost getters:
 ## a "working thief" is any pirate whose CURRENT role is thief in
-## TELEGRAPH, SEEK or DRAG — a natural grabber, or a convert that
-## finished its reshape. While one works, no conversion starts.
+## TELEGRAPH, SEEK, DRAG or WRESTLE — a natural grabber, or a
+## convert that finished its reshape. While one works, no
+## conversion starts.
 ## Three triggers, any one sufficient, all gated by the cooldown
 ## and by nobody already reshaping (one at a time):
 ##   (a) the quota is spent and no getter works, sustained for
@@ -609,14 +631,15 @@ func _step_conversion(delta: float) -> void:
 	var any_converting: bool = false
 	var any_in_drag: bool = false
 	for p: Pirate in pirates:
-		if p.phase == Pirate.Phase.DRAG:
+		if p.phase == Pirate.Phase.DRAG or p.phase == Pirate.Phase.WRESTLE:
 			any_in_drag = true
 		if p.is_converting():
 			any_converting = true
 		if p.current_role() == "thief" and (
 				p.phase == Pirate.Phase.TELEGRAPH
 				or p.phase == Pirate.Phase.SEEK
-				or p.phase == Pirate.Phase.DRAG):
+				or p.phase == Pirate.Phase.DRAG
+				or p.phase == Pirate.Phase.WRESTLE):
 			working_thief = true
 	if working_thief:
 		_wave_had_thief = true
@@ -625,8 +648,10 @@ func _step_conversion(delta: float) -> void:
 		_convert_dead_air_t += delta
 	else:
 		_convert_dead_air_t = 0.0
-	# (c) Steal progress is a canister DRAGGING or a pirate in
-	# DRAG; anything else lets the backstop clock run.
+	# (c) Steal progress is a canister DRAGGING, a pirate in
+	# DRAG, or a wrestler on the player's tow (a steal in
+	# progress against the tow itself); anything else lets the
+	# backstop clock run.
 	if _any_dragging() or any_in_drag:
 		_convert_no_progress_t = 0.0
 	else:
@@ -759,12 +784,26 @@ func _physics_process(delta: float) -> void:
 		bb.step(delta, canisters, player.global_position, player.alive)
 
 	# Towed canister trails the ship before canister physics runs.
-	if player.towed != null and is_instance_valid(player.towed):
+	if player.towed != null and is_instance_valid(player.towed) \
+			and player.towed.state == Canister.State.TOWED:
 		var c: Canister = player.towed
 		var trail: Vector2 = player.global_position \
 			- player.facing * Tuning.TOW_TRAIL_DIST
 		var blend: float = clampf(Tuning.TOW_FOLLOW_RATE * delta, 0.0, 1.0)
 		c.global_position = c.global_position.lerp(trail, blend)
+		# CONTESTED TOW: every wrestler hauls on the canister
+		# toward its own exit at its drag strength (scaled) —
+		# a constant bias against the tow's exponential follow,
+		# so the pair strains off the clean trail line while the
+		# player keeps control. This step is the canister's only
+		# position writer while TOWED; the wrestlers just hang on.
+		for wv: Node2D in c.wrestlers:
+			if wv is Pirate and is_instance_valid(wv):
+				var w: Pirate = wv as Pirate
+				var pull: Vector2 = w.exit_point - c.global_position
+				if pull.length() > 1.0:
+					c.global_position += pull.normalized() \
+						* w.drag_speed() * Tuning.WRESTLE_PULL_SCALE * delta
 	for c: Canister in canisters:
 		c.step(delta)
 
@@ -987,7 +1026,13 @@ func _resolve_tow_and_deposit() -> void:
 			player.towed = null
 		elif c.global_position.distance_to(Tuning.depot_center()) \
 				<= Tuning.DEPOT_RADIUS:
-			# Deposit: pay the distance-scaled bonus, glide it home.
+			# Deposit: any wrestlers let go (the canister is home;
+			# they retarget through plain SEEK), the distance-
+			# scaled bonus pays, and it glides into its berth.
+			var wrestlers_now: Array[Node2D] = c.wrestlers.duplicate()
+			for wv2: Node2D in wrestlers_now:
+				if wv2 is Pirate and is_instance_valid(wv2):
+					(wv2 as Pirate).detach_wrestle()
 			var base_pts: int = recovery_base_points(c.tow_start_pos)
 			var paid: int = add_score(base_pts)
 			sfx.play_recovery(c.global_position, base_pts)
@@ -1157,6 +1202,12 @@ func _draw() -> void:
 				and c.holder != null and is_instance_valid(c.holder):
 			draw_line(c.holder.global_position, c.global_position,
 				Color(Tuning.COLOR_CANISTER, 0.55), 1.5, true)
+		# Wrestler tethers (contested tow): the same line, from
+		# each pirate hanging on a towed canister to the canister.
+		for wv3: Node2D in c.wrestlers:
+			if is_instance_valid(wv3):
+				draw_line(wv3.global_position, c.global_position,
+					Color(Tuning.COLOR_CANISTER, 0.55), 1.5, true)
 	# Shrapnel.
 	for d: Dictionary in _debris:
 		var frac: float = float(d["t"]) / float(d["dur"])

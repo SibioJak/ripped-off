@@ -4,8 +4,12 @@ extends Node2D
 ## Phases: TELEGRAPH (visible warning at the entry point, cannot
 ## move) -> SEEK -> DRAG -> LEAVE. What SEEK means depends on the
 ## def's role: a "thief" hunts the nearest stealable canister and
-## DRAGs it to an exit; a "shooter" flies to a standoff point and
-## HOLDs, strafing in its range band and firing aimed shots, each
+## DRAGs it to an exit — or, if the nearest target is the canister
+## the player is towing, latches on and WRESTLEs it (contested
+## tow: the tow strains, a second latch rips it loose, and the
+## player's death hands the haul to the wrestler); a "shooter"
+## flies to a standoff point and HOLDs, strafing in its range band
+## and firing aimed shots, each
 ## one announced by a visible muzzle charge-up; a "hunter" (M6)
 ## never looks at a canister at all — it pursues the player,
 ## strafes around them at orbit range and fires lead shots, and
@@ -18,8 +22,9 @@ extends Node2D
 
 signal fired(from: Vector2, dir: Vector2)
 signal convert_stage(stage: int)
+signal wrestle_started(c: Canister)
 
-enum Phase { TELEGRAPH, SEEK, DRAG, LEAVE, HOLD, CONVERT }
+enum Phase { TELEGRAPH, SEEK, DRAG, LEAVE, HOLD, CONVERT, WRESTLE }
 
 var phase: Phase = Phase.TELEGRAPH
 var type_name: String = "grabber"
@@ -30,6 +35,13 @@ var velocity: Vector2 = Vector2.ZERO
 var target: Canister = null
 var held: Canister = null
 var exit_point: Vector2 = Vector2.ZERO
+
+## CONTESTED TOW: while phase == WRESTLE this pirate is latched
+## onto the canister the player is towing (`wrestling`, also
+## registered in that canister's wrestlers list). It holds no
+## canister of its own — `held` stays null until a rip or a
+## player death hands the haul over through the ordinary DRAG.
+var wrestling: Canister = null
 
 ## Context Main pushes in every frame before stepping.
 var player_pos: Vector2 = Vector2.ZERO
@@ -128,6 +140,12 @@ func muzzle_pos() -> Vector2:
 	return global_position + _facing * (radius + 5.0)
 
 
+## The escape speed while dragging (Main's contested-tow strain
+## reads the wrestler's, so the pull is this class's own strength).
+func drag_speed() -> float:
+	return _drag_speed
+
+
 func score_value() -> int:
 	return int(def.get("score", 100))
 
@@ -204,6 +222,8 @@ func step(delta: float, canisters: Array[Canister]) -> void:
 				_steer_toward(exit_point, _drag_speed, delta)
 				# The canister trails just behind the pirate's nose.
 				held.global_position = global_position - _facing * 24.0
+		Phase.WRESTLE:
+			_step_wrestle(delta)
 		Phase.HOLD:
 			_step_shooter_hold(delta)
 		Phase.LEAVE:
@@ -218,19 +238,22 @@ func _step_thief_seek(delta: float, canisters: Array[Canister]) -> void:
 		_enter_leave()
 		return
 	# Drag governor (Tuning.MAX_CONCURRENT_DRAGS): at most that
-	# many canisters may be DRAGGING under pirate control at
-	# once. The lane count is read once, here — it cannot change
-	# during this pirate's own step (steals resolve and pirates
-	# die in Main's phases, never inside a pirate step). A thief
-	# that reaches its canister while every lane is taken does
-	# NOT latch: it holds station at the latch ring — no steering
-	# at all, velocity zeroed, so it cannot buzz or orbit the
-	# canister — and re-tests the gate on the next step, latching
-	# the moment a lane frees (a steal carries its canister off,
+	# many pirate hauls may be live at once. The lane LOAD is
+	# read once, here — it cannot change during this pirate's
+	# own step (steals resolve and pirates die in Main's phases,
+	# never inside a pirate step). A thief that reaches its
+	# canister while every lane is taken does NOT latch: it
+	# holds station at the latch ring — no steering at all,
+	# velocity zeroed, so it cannot buzz or orbit the canister —
+	# and re-tests the gate on the next step, latching the
+	# moment a lane frees (a steal carries its canister off,
 	# or a dragging pirate dies and drops its haul). The wait
 	# stays in Phase.SEEK throughout, so Main's conversion
 	# watcher keeps counting this pirate as a working thief.
-	var lanes_full: bool = _pirate_drag_count(canisters) \
+	# The gate covers BOTH latch kinds: an ordinary drag latch
+	# on a home/loose canister, and a wrestle latch on the
+	# canister the player is towing (contested tow).
+	var lanes_full: bool = _pirate_lane_load(canisters) \
 		>= Tuning.MAX_CONCURRENT_DRAGS
 	if lanes_full \
 			and global_position.distance_to(target.global_position) \
@@ -238,10 +261,13 @@ func _step_thief_seek(delta: float, canisters: Array[Canister]) -> void:
 		velocity = Vector2.ZERO
 		return
 	_steer_toward(target.global_position, _speed, delta)
-	if not lanes_full \
-			and global_position.distance_to(target.global_position) \
-			<= Tuning.PIRATE_LATCH_DIST \
-			and target.begin_drag(self):
+	if lanes_full \
+			or global_position.distance_to(target.global_position) \
+			> Tuning.PIRATE_LATCH_DIST:
+		return
+	if target.state == Canister.State.TOWED:
+		_try_wrestle_latch(target)
+	elif target.begin_drag(self):
 		held = target
 		target = null
 		buzzed_this_drag = false # a fresh drag can be buzzed again
@@ -249,7 +275,7 @@ func _step_thief_seek(delta: float, canisters: Array[Canister]) -> void:
 		exit_point = Tuning.nearest_exit_point(global_position)
 
 
-## The drag governor's lane count: how many canisters are
+## The drag governor's drag count: how many canisters are
 ## DRAGGING under PIRATE control right now. The holder test is
 ## the whole exemption — a canister held by the boss's grab arm
 ## (holder is the Boss, not a Pirate) never counts, so the boss
@@ -260,6 +286,102 @@ func _pirate_drag_count(canisters: Array[Canister]) -> int:
 		if c.state == Canister.State.DRAGGING and c.holder is Pirate:
 			n += 1
 	return n
+
+
+## The governor's full lane load: pirate drags PLUS active
+## wrestlers (contested tow). A wrestler holds a lane exactly
+## as a drag does — it is mid-steal, just against the player's
+## own tow — so a latch of either kind needs the shared load
+## under the cap: two drags in flight refuse a wrestle, and
+## one drag plus one wrestler refuse everything further.
+func _pirate_lane_load(canisters: Array[Canister]) -> int:
+	var n: int = _pirate_drag_count(canisters)
+	for c: Canister in canisters:
+		n += c.wrestle_count()
+	return n
+
+
+## The wrestle latch, attempted from SEEK at latch range of a
+## canister the player is towing (the governor gate above has
+## already passed: a lane is free). Two cases:
+##  - Nobody is wrestling it yet: THIS pirate hangs on. The
+##    canister stays TOWED — the wrestle is a link, not a hold —
+##    and Main hears the latch (the CONTESTED! popup).
+##  - Another pirate is already wrestling it: the second latch
+##    RIPS the tow loose. The canister passes to the FIRST
+##    wrestler through the ordinary drag door and that pirate
+##    hauls it out; this pirate keeps nothing and retargets
+##    through plain SEEK next step.
+func _try_wrestle_latch(c: Canister) -> void:
+	if c.wrestle_count() == 0:
+		wrestling = c
+		c.add_wrestler(self)
+		exit_point = Tuning.nearest_exit_point(global_position)
+		phase = Phase.WRESTLE
+		target = null
+		wrestle_started.emit(c)
+		return
+	var first: Node2D = c.wrestlers[0]
+	if first is Pirate and first != self and is_instance_valid(first):
+		var w1: Pirate = first as Pirate
+		if c.begin_drag_from_tow(w1):
+			w1.wrestling = null
+			w1.held = c
+			w1.buzzed_this_drag = false # a fresh drag can be buzzed again
+			w1.phase = Phase.DRAG
+	target = null
+
+
+## Wrestling, per step: haul toward the exit at drag strength
+## while hanging on. The strain itself is applied in Main's tow
+## step — the canister's position has exactly one owner — from
+## this pirate's exit point and drag speed; this step only keeps
+## the wrestler itself in play: steering for its exit, and
+## clamped to the tether so it rides the canister wherever the
+## tow drags it instead of being left behind. Any change in the
+## canister's situation — slotted by the player, ripped by a
+## second latch, handed over, dropped — makes the link stale
+## and the wrestler lets go back to SEEK on this check.
+func _step_wrestle(delta: float) -> void:
+	if wrestling == null or not is_instance_valid(wrestling) \
+			or not wrestling.is_wrestle_target() \
+			or not wrestling.wrestlers.has(self):
+		detach_wrestle()
+		return
+	_steer_toward(exit_point, _drag_speed, delta)
+	var to_c: Vector2 = wrestling.global_position - global_position
+	if to_c.length() > Tuning.WRESTLE_TETHER_DIST:
+		global_position = wrestling.global_position \
+			- to_c.normalized() * Tuning.WRESTLE_TETHER_DIST
+
+
+## Let go of a wrestle (the canister slotted, the link went
+## stale, or Main is killing this pirate): the registration
+## clears on both sides and a wrestling pirate returns to SEEK.
+func detach_wrestle() -> void:
+	if wrestling != null and is_instance_valid(wrestling):
+		wrestling.remove_wrestler(self)
+	wrestling = null
+	if phase == Phase.WRESTLE:
+		phase = Phase.SEEK
+
+
+## The player's death mid-wrestle hands the haul to the
+## wrestler (Main calls this BEFORE the tow drop): the canister
+## passes straight from TOWED to this pirate's DRAG and the
+## ordinary steal path takes it out — it never drops LOOSE.
+## Returns true when the handover happened.
+func take_over_wrestle() -> bool:
+	if wrestling == null or not is_instance_valid(wrestling):
+		return false
+	var c: Canister = wrestling
+	if not c.begin_drag_from_tow(self):
+		return false
+	wrestling = null
+	held = c
+	buzzed_this_drag = false # a fresh drag can be buzzed again
+	phase = Phase.DRAG
+	return true
 
 
 ## The reshape (M7): the ship holds its position and rebuilds
@@ -414,14 +536,18 @@ func _step_hunter(delta: float) -> void:
 
 func _target_valid() -> bool:
 	return target != null and is_instance_valid(target) \
-		and target.is_available_target()
+		and (target.is_available_target() or target.is_wrestle_target())
 
 
+## The nearest targetable canister, one selection rule for both
+## target kinds: home/loose canisters (ordinary latch) and the
+## player-towed canister (wrestle latch) compete purely on
+## distance — no priority override either way.
 func _find_target(canisters: Array[Canister]) -> Canister:
 	var best: Canister = null
 	var best_d: float = INF
 	for c: Canister in canisters:
-		if c.is_available_target():
+		if c.is_available_target() or c.is_wrestle_target():
 			var d: float = global_position.distance_squared_to(c.global_position)
 			if d < best_d:
 				best_d = d

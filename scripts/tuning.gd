@@ -67,6 +67,18 @@ const MAX_CONCURRENT_DRAGS: int = 2 # drag governor: at most this many
 	# swarm can never snatch the whole depot in one moment. The
 	# boss's grab arm is EXEMPT: a boss-held canister never counts
 	# toward this cap, and the boss's own grab is never gated.
+	# CONTESTED TOW shares these lanes: a pirate wrestling a
+	# player-towed canister holds one lane exactly as a drag does,
+	# and a latch of either kind needs the shared load under cap.
+
+# --- Contested tow -----------------------------------------------------
+const WRESTLE_TETHER_DIST: float = 30.0 # a wrestler hangs on within
+	# this distance of the canister it is wrestling
+const WRESTLE_PULL_SCALE: float = 2.5 # the wrestle's bias on the tow:
+	# the wrestler's drag speed x this, applied toward its exit
+	# against the tow's follow rate — the pair strains visibly
+	# (equilibrium ~16px off the clean trail) but the player
+	# keeps control and can still muscle the canister home
 const SPAWN_EXCLUSION_RADIUS: float = 260.0 # no spawn point this close to the player
 
 # --- Salvage shards ---------------------------------------------------------
