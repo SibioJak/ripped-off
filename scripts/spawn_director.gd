@@ -17,15 +17,27 @@ extends Node
 ## the cap, and the flow factor still refills a thin field
 ## briskly without ever bursting.
 ##
-## Two dealing disciplines survive from the deck era:
-##  - the anti-clump rule: no class deals more than
-##    DIRECTOR_MAX_RUN times consecutively while another
-##    unlocked class holds a share of at least 0.10;
-##  - class alive caps (hunter by time, darter, sniper): a
-##    capped class does not deal, and its share redistributes
-##    to the grabber for that deal — the canister pressure the
-##    capped class would have spared the player is handed to
-##    the thieves instead.
+## Three dealing disciplines:
+##  - the anti-clump rule (survived from the deck era): no
+##    class deals more than DIRECTOR_MAX_RUN times
+##    consecutively while another unlocked class holds a share
+##    of at least 0.10;
+##  - proportional redistribution (the rebalance): a class that
+##    cannot deal — at its alive cap (hunter by time, darter,
+##    sniper), or the grabber during a tow window — has its
+##    share spread across the other unlocked, uncapped
+##    NON-GRABBER classes in proportion to their shares. The
+##    grabber's own weight is always exactly its curve share;
+##    it takes redistributed share only when literally every
+##    other door is shut (all other classes locked or capped),
+##    the one remaining fallback;
+##  - the tow window (the rebalance): while the player tows a
+##    canister, the grabber is held out of the deal entirely
+##    (redistributed as above) and the spawn interval stretches
+##    by Tuning.TOW_WINDOW_INTERVAL_SCALE. Pirates already out
+##    are untouched — only deals are gated. The window ends the
+##    instant the tow does; nothing is banked and nothing
+##    bursts to catch up.
 
 signal spawn_requested(type_name: String, pos: Vector2)
 
@@ -68,7 +80,7 @@ func class_alive_cap(type_name: String, elapsed: float) -> int:
 
 func step(delta: float, alive_count: int, player_pos: Vector2,
 		rank: float = 0.0, class_alive: Dictionary = {},
-		elapsed: float = 0.0) -> void:
+		elapsed: float = 0.0, towing: bool = false) -> void:
 	if not active:
 		return
 	var max_alive: int = Tuning.alive_cap_at(elapsed) \
@@ -77,31 +89,27 @@ func step(delta: float, alive_count: int, player_pos: Vector2,
 		return
 	_spawn_t -= delta
 	if _spawn_t <= 0.0:
-		var dealt: String = pick_next_type(elapsed, class_alive)
+		var dealt: String = pick_next_type(elapsed, class_alive, towing)
 		_spawn_t = Tuning.rank_spawn_interval(
 				Tuning.spawn_interval_at(elapsed), rank) \
 			* Tuning.spawn_flow_frac(alive_count, max_alive) \
 			* randf_range(0.8, 1.25)
+		if towing:
+			_spawn_t *= Tuning.TOW_WINDOW_INTERVAL_SCALE
 		spawn_requested.emit(dealt, pick_spawn_point(player_pos))
 
 
-## Sample the next class to deal at a run time. The composition
-## comes from Tuning; a class at its alive cap is excluded and
-## its share flows to the grabber for this deal. The anti-clump
-## rule then applies: if the sampled class would extend the
-## standing run past DIRECTOR_MAX_RUN while another unlocked
-## class holds a share of at least 0.10, the deal is resampled
-## once with the running class excluded.
-func pick_next_type(elapsed: float, class_alive: Dictionary) -> String:
+## Sample the next class to deal at a run time. The weights
+## come from _deal_weights (composition, caps, tow window).
+## The anti-clump rule then applies: if the sampled class
+## would extend the standing run past DIRECTOR_MAX_RUN while
+## another unlocked class holds a share of at least 0.10, the
+## deal is resampled once with the running class excluded.
+func pick_next_type(elapsed: float, class_alive: Dictionary,
+		towing: bool = false) -> String:
 	var comp: Dictionary = Tuning.composition_at(elapsed)
-	var weights: Dictionary = {}
-	for c: String in CLASSES:
-		var w: float = float(comp.get(c, 0.0))
-		if w > 0.0 and int(class_alive.get(c, 0)) \
-				>= class_alive_cap(c, elapsed):
-			weights["grabber"] = float(weights.get("grabber", 0.0)) + w
-			w = 0.0
-		weights[c] = float(weights.get(c, 0.0)) + w
+	var weights: Dictionary = _deal_weights(comp, elapsed,
+		class_alive, towing)
 	var pick: String = _weighted_pick(weights)
 	if pick == _last_dealt and _deal_run >= Tuning.DIRECTOR_MAX_RUN \
 			and _another_class_has_share(comp, pick):
@@ -118,6 +126,61 @@ func pick_next_type(elapsed: float, class_alive: Dictionary) -> String:
 	return pick
 
 
+## Build the deal weights for one sample. A class is EXCLUDED
+## when it cannot deal on this sample: at its alive cap, or the
+## grabber while the tow window is up. The excluded shares pool
+## and spread across the eligible NON-GRABBER classes in
+## proportion to their composition shares — the grabber's
+## weight is always exactly its curve share, never a magnet
+## for other classes' scraps. (The rebalance: the old rule
+## handed every capped share to the grabber, a quiet thief
+## amplifier.) Edge: if every non-grabber class is locked or
+## capped, no recipient exists and the grabber takes the pool
+## whole — the only remaining door, tow window or not.
+func _deal_weights(comp: Dictionary, elapsed: float,
+		class_alive: Dictionary, towing: bool) -> Dictionary:
+	var excluded: Dictionary = {}
+	var pool: float = 0.0
+	for c: String in CLASSES:
+		var w: float = float(comp.get(c, 0.0))
+		var out: bool = towing and c == "grabber"
+		if not out and w > 0.0 and int(class_alive.get(c, 0)) \
+				>= class_alive_cap(c, elapsed):
+			out = true
+		if out:
+			excluded[c] = true
+			pool += w
+	var recipients: float = 0.0
+	for c2: String in CLASSES:
+		if c2 != "grabber" and not excluded.has(c2):
+			recipients += float(comp.get(c2, 0.0))
+	var weights: Dictionary = {}
+	for c3: String in CLASSES:
+		if excluded.has(c3):
+			weights[c3] = 0.0
+		elif c3 == "grabber":
+			weights[c3] = float(comp.get(c3, 0.0))
+			if recipients <= 0.0:
+				# Every other door is shut: the grabber takes
+				# the pool — the only remaining door.
+				weights[c3] = float(weights.get(c3, 0.0)) + pool
+		elif recipients > 0.0:
+			var base: float = float(comp.get(c3, 0.0))
+			weights[c3] = base + pool * (base / recipients)
+		else:
+			weights[c3] = float(comp.get(c3, 0.0))
+	var total: float = 0.0
+	for c4: String in CLASSES:
+		total += float(weights.get(c4, 0.0))
+	if total <= 0.0:
+		# Unreachable with the shipped curves (the gunner is
+		# never capped and always holds a share, so a recipient
+		# always exists) — but a deal must never come up empty:
+		# the grabber takes it, the only remaining door.
+		weights["grabber"] = 1.0
+	return weights
+
+
 ## Does any unlocked class other than `except_class` hold a
 ## composition share of at least 0.10? (The anti-clump rule's
 ## condition: clumps only matter when a real alternative mix
@@ -130,8 +193,8 @@ func _another_class_has_share(comp: Dictionary, except_class: String) -> bool:
 
 
 ## Weighted sample over a {class: weight} dictionary. Returns ""
-## only when every weight is zero (unreachable in play: the
-## grabber's share is floored and it is never capped).
+## only when every weight is zero (unreachable in play:
+## _deal_weights guarantees a positive total).
 func _weighted_pick(weights: Dictionary) -> String:
 	var total: float = 0.0
 	for c: String in CLASSES:

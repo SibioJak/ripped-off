@@ -611,11 +611,18 @@ func _physics_process(delta: float) -> void:
 	# Spawning. The director gates its deals on how many of each
 	# class are alive right now (the class alive caps), the run
 	# clock drives its escalation, and Rank breathes on top.
+	# The tow flag drives the director's tow window: a canister
+	# on the player's hook (held by the player, contested or
+	# not) holds new grabbers out of the deal.
 	var class_alive: Dictionary = {}
 	for hp: Pirate in pirates:
 		class_alive[hp.type_name] = int(class_alive.get(hp.type_name, 0)) + 1
+	var towing: bool = player.towed != null \
+		and is_instance_valid(player.towed) \
+		and player.towed.state == Canister.State.TOWED \
+		and player.towed.holder == player
 	director.step(delta, pirates.size(), player.global_position, rank,
-		class_alive, run_time)
+		class_alive, run_time, towing)
 
 	# Pirates, then the canisters they drag or trail. Each pirate
 	# gets its per-frame context first: where the player is, whether
