@@ -1267,9 +1267,9 @@ func _ready() -> void:
 	dq.spawn_requested.connect(_record_spawn)
 	dq.start_run()
 	# Alive gate: at the cap nothing spawns, one below it a
-	# spawn lands. t=0 rank 0: cap 5. t=480 rank 1: 12 + 3 = 15.
+	# spawn lands. t=0 rank 0: cap 4. t=480 rank 1: 12 + 3 = 15.
 	# (The below-cap probes step 2.0s: a dealt interval can run
-	# to ~1.19s at t=0 with flow and jitter at their maxima,
+	# to ~1.69s at t=0 with flow and jitter at their maxima,
 	# and one step deals at most once regardless of its size.)
 	_dealt_types.clear()
 	dq.step(1.0, Tuning.alive_cap_at(0.0), Vector2.ZERO, 0.0, {}, 0.0)
@@ -1287,25 +1287,31 @@ func _ready() -> void:
 	_check("retune: alive caps gate the director (t=0 rank 0 cap %d; t=480 rank 1 cap %d)"
 		% [Tuning.alive_cap_at(0.0), cap_end106],
 		gated_t0 and spawned_t0 and gated_t480 and spawned_t480)
-	_check("retune: spawn interval base 1.05s at t=0 tightening to 0.48s at t=480 and held; rank scales it x0.55 at rank 1",
-		absf(Tuning.spawn_interval_at(0.0) - 1.05) < 0.001
-			and absf(Tuning.spawn_interval_at(480.0) - 0.48) < 0.001
-			and absf(Tuning.spawn_interval_at(9999.0) - 0.48) < 0.001
+	# REWORKED (rebalance): slower open — 1.35s at t=0,
+	# tightening to 0.55s at t=480 and held; rank scaling
+	# unchanged.
+	_check("retune: spawn interval base 1.35s at t=0 tightening to 0.55s at t=480 and held; rank scales it x0.55 at rank 1",
+		absf(Tuning.spawn_interval_at(0.0) - 1.35) < 0.001
+			and absf(Tuning.spawn_interval_at(480.0) - 0.55) < 0.001
+			and absf(Tuning.spawn_interval_at(9999.0) - 0.55) < 0.001
 			and absf(Tuning.rank_spawn_interval(
 				Tuning.spawn_interval_at(0.0), 1.0)
-				- 1.05 * Tuning.SPAWN_INTERVAL_MIN_FRAC) < 0.001)
+				- 1.35 * Tuning.SPAWN_INTERVAL_MIN_FRAC) < 0.001)
 	_check("retune: rank start 0.25; run-time floors 0.20 / 0.375 / 0.55 at t=0 / 300 / 600, held after",
 		Tuning.RANK_START == 0.25
 			and absf(Tuning.rank_floor_at(0.0) - 0.20) < 0.001
 			and absf(Tuning.rank_floor_at(300.0) - 0.375) < 0.001
 			and absf(Tuning.rank_floor_at(600.0) - 0.55) < 0.001
 			and absf(Tuning.rank_floor_at(9999.0) - 0.55) < 0.001)
-	_check("retune: composition plateaus at t=400 — gunner 0.28, hunter 0.14, darter 0.10, sniper 0.10, grabber 0.38",
-		absf(float(Tuning.composition_at(400.0).get("gunner", 0.0)) - 0.28) < 0.001
+	# REWORKED (rebalance): the gunner plateau is 0.30 (it
+	# starts at 0.40 and eases DOWN to it) and the grabber
+	# rests at 0.36 above its lowered 0.30 floor.
+	_check("retune: composition plateaus at t=400 — gunner 0.30, hunter 0.14, darter 0.10, sniper 0.10, grabber 0.36",
+		absf(float(Tuning.composition_at(400.0).get("gunner", 0.0)) - 0.30) < 0.001
 			and absf(float(Tuning.composition_at(400.0).get("hunter", 0.0)) - 0.14) < 0.001
 			and absf(float(Tuning.composition_at(400.0).get("darter", 0.0)) - 0.10) < 0.001
 			and absf(float(Tuning.composition_at(400.0).get("sniper", 0.0)) - 0.10) < 0.001
-			and absf(float(Tuning.composition_at(400.0).get("grabber", 0.0)) - 0.38) < 0.001)
+			and absf(float(Tuning.composition_at(400.0).get("grabber", 0.0)) - 0.36) < 0.001)
 
 	# (107) Hunter kill flow, through Main's standard paths: a
 	# bullet kill pays 175 x multiplier and bursts 5 shards; a
@@ -1908,31 +1914,54 @@ func _ready() -> void:
 		% [Tuning.DIRECTOR_MAX_RUN, worst136],
 		worst136 <= Tuning.DIRECTOR_MAX_RUN)
 
-	# (137) REWORKED (restructure): class-cap dealing. With the
-	# hunter count fed in AT the cap (2 at t=100), no hunter is
-	# dealt in 600 samples — its share redistributes to the
-	# grabber for those deals; with the count below the cap,
-	# hunters deal again.
+	# (137) REWORKED (rebalance): class-cap dealing and the
+	# redistribution rule. Two 6000-sample runs at t=100 on
+	# the same seed — one with the hunter count fed in AT the
+	# cap (2), one uncapped. (Raw dealt fractions sit below
+	# raw weights for a majority class because the anti-clump
+	# rule resamples away from any 3-run, so the rule is
+	# asserted as a COMPARISON, not against curve numbers —
+	# (174) covers the absolute fraction at the plateau.)
+	# The contract: capped hunters deal zero; the hunter's
+	# share lands on the GUNNER (the only other unlocked class
+	# at t=100 takes it proportionally), measurably raising
+	# the gunner count; and the grabber count does NOT rise —
+	# under the old everything-to-grabber rule the deltas
+	# would invert (grabber up ~the full hunter share, gunner
+	# flat).
 	var d137: SpawnDirector = SpawnDirector.new()
-	seed(51003)
 	var capped137: Dictionary = {"hunter": Tuning.hunter_alive_cap_at(100.0)}
+	seed(51003)
 	var hunters_capped137: int = 0
 	var grabbers_capped137: int = 0
-	for k137a: int in range(600):
+	var gunners_capped137: int = 0
+	for k137a: int in range(6000):
 		var dealt137a: String = d137.pick_next_type(100.0, capped137)
 		if dealt137a == "hunter":
 			hunters_capped137 += 1
 		elif dealt137a == "grabber":
 			grabbers_capped137 += 1
+		elif dealt137a == "gunner":
+			gunners_capped137 += 1
+	seed(51003)
 	var hunters_open137: int = 0
-	for k137b: int in range(600):
-		if d137.pick_next_type(100.0, {}) == "hunter":
+	var grabbers_open137: int = 0
+	var gunners_open137: int = 0
+	for k137b: int in range(6000):
+		var dealt137b: String = d137.pick_next_type(100.0, {})
+		if dealt137b == "hunter":
 			hunters_open137 += 1
+		elif dealt137b == "grabber":
+			grabbers_open137 += 1
+		elif dealt137b == "gunner":
+			gunners_open137 += 1
 	d137.queue_free()
-	_check("class-cap dealing: hunters at cap deal zero hunters in 600 samples (grabbers %d take the share); uncapped, hunters deal (%d)"
-		% [grabbers_capped137, hunters_open137],
-		hunters_capped137 == 0 and grabbers_capped137 > 400
-			and hunters_open137 > 0)
+	_check("class-cap dealing: hunters at cap deal zero hunters in 6000 samples (uncapped %d); the capped share lands on the gunner (capped %d vs uncapped %d), not the grabber (capped %d vs uncapped %d)"
+		% [hunters_open137, gunners_capped137, gunners_open137,
+			grabbers_capped137, grabbers_open137],
+		hunters_capped137 == 0 and hunters_open137 > 0
+			and gunners_capped137 >= gunners_open137 + 60
+			and grabbers_capped137 <= grabbers_open137 + 60)
 
 	# (138) Flow pacing: the factor itself (specced value on an
 	# empty field, 1.0 at the cap, monotonic between), plus the
@@ -2510,44 +2539,61 @@ func _ready() -> void:
 
 	# --- Restructure: continuous director, darter, sniper ---------
 
-	# (164) Composition curve: at t=10 only the grabber holds a
-	# share; at t=100 gunner and hunter are in and darter/sniper
-	# are still locked; at t=400 all five hold shares, the
-	# grabber sits exactly on its 0.38 floor, and shares sum to 1.
+	# (164) REWORKED (rebalance): composition curve. At t=10
+	# the grabber and gunner split the field (gunner deals from
+	# t=0 at 0.40, easing down — at t=10 it holds 0.3944, the
+	# grabber 0.6056) and the specialists are still locked; at
+	# t=100 gunner and hunter are in and darter/sniper are
+	# still locked; at t=400 all five hold shares, the grabber
+	# rests at 0.36 above its lowered 0.30 floor, and shares
+	# sum to 1.
 	var comp10: Dictionary = Tuning.composition_at(10.0)
 	var comp100: Dictionary = Tuning.composition_at(100.0)
 	var comp400: Dictionary = Tuning.composition_at(400.0)
 	var sum400: float = 0.0
 	for cv164: Variant in comp400.values():
 		sum400 += float(cv164)
-	_check("composition: t=10 grabber only; t=100 gunner+hunter in, darter+sniper locked; t=400 all five, grabber on its 0.38 floor, shares sum to 1",
-		absf(float(comp10.get("grabber", 0.0)) - 1.0) < 0.001
-			and float(comp10.get("gunner", 0.0)) == 0.0
+	_check("composition: t=10 grabber 0.6056 / gunner 0.3944; t=100 gunner+hunter in, darter+sniper locked; t=400 all five, grabber 0.36 over its 0.30 floor, shares sum to 1",
+		absf(float(comp10.get("grabber", 0.0)) - 0.6056) < 0.001
+			and absf(float(comp10.get("gunner", 0.0)) - 0.3944) < 0.001
+			and float(comp10.get("hunter", 0.0)) == 0.0
 			and float(comp100.get("gunner", 0.0)) > 0.0
 			and float(comp100.get("hunter", 0.0)) > 0.0
 			and float(comp100.get("darter", 0.0)) == 0.0
 			and float(comp100.get("sniper", 0.0)) == 0.0
 			and float(comp400.get("darter", 0.0)) > 0.0
 			and float(comp400.get("sniper", 0.0)) > 0.0
-			and absf(float(comp400.get("grabber", 0.0)) - 0.38) < 0.001
+			and absf(float(comp400.get("grabber", 0.0)) - 0.36) < 0.001
 			and absf(sum400 - 1.0) < 0.001)
 
-	# (165) Unlock boundaries, seed-pinned: just below an unlock
-	# the locked class cannot deal — at t=29.9 every deal is a
-	# grabber; at t=179.9 no sniper appears in 600 deals.
+	# (165) REWORKED (rebalance): unlock boundaries,
+	# seed-pinned. The gunner unlock moved to t=0, so at t=29.9
+	# the deals are grabber+gunner — what cannot appear is a
+	# LOCKED class: no hunter, darter or sniper in 300 deals,
+	# and both open classes flow. At t=179.9 no sniper appears
+	# in 600 deals.
 	var d165: SpawnDirector = SpawnDirector.new()
 	seed(61001)
-	var non_grabber165: int = 0
+	var locked165: int = 0
+	var grabbers165: int = 0
+	var gunners165: int = 0
 	for i165a: int in range(300):
-		if d165.pick_next_type(29.9, {}) != "grabber":
-			non_grabber165 += 1
+		var dealt165: String = d165.pick_next_type(29.9, {})
+		if dealt165 == "grabber":
+			grabbers165 += 1
+		elif dealt165 == "gunner":
+			gunners165 += 1
+		else:
+			locked165 += 1
 	var snipers165: int = 0
 	for i165b: int in range(600):
 		if d165.pick_next_type(179.9, {}) == "sniper":
 			snipers165 += 1
 	d165.queue_free()
-	_check("unlock boundaries: 300 deals at t=29.9 are all grabber; 600 deals at t=179.9 deal no sniper",
-		non_grabber165 == 0 and snipers165 == 0)
+	_check("unlock boundaries: 300 deals at t=29.9 deal no locked class (grabbers %d, gunners %d both flow); 600 deals at t=179.9 deal no sniper"
+		% [grabbers165, gunners165],
+		locked165 == 0 and grabbers165 > 0 and gunners165 > 0
+			and snipers165 == 0)
 
 	# (166) Endless soak, phase A: a standalone director runs
 	# 600 simulated seconds (delta 0.25) against a scripted
@@ -2889,6 +2935,167 @@ func _ready() -> void:
 			and props172.has("run_time")
 			and not props172.has("wave")
 			and not props172.has("boss_bar_active"))
+
+	# --- Rebalance: gunner-forward mix, proportional spread, tow window ---
+
+	# (173) NEW (rebalance): opening composition — gunners deal
+	# from the first second. 2000 seed-pinned picks at t=10:
+	# the gunner fraction sits on its curve share (~0.394; the
+	# band leaves the anti-clump rule its elbow room) and no
+	# specialist class appears.
+	var d173: SpawnDirector = SpawnDirector.new()
+	seed(71003)
+	var gunners173: int = 0
+	var specialists173: int = 0
+	for k173: int in range(2000):
+		var dealt173: String = d173.pick_next_type(10.0, {})
+		if dealt173 == "gunner":
+			gunners173 += 1
+		elif dealt173 != "grabber":
+			specialists173 += 1
+	d173.queue_free()
+	var gun_frac173: float = float(gunners173) / 2000.0
+	_check("opening composition: 2000 deals at t=10 deal gunners at %.3f (curve 0.394) and zero hunters/darters/snipers (%d)"
+		% [gun_frac173, specialists173],
+		gun_frac173 >= 0.34 and gun_frac173 <= 0.47
+			and specialists173 == 0)
+
+	# (174) NEW (rebalance): redistribution at the plateau.
+	# Hunters staged AT their alive cap at t=400: their 0.14
+	# share spreads proportionally across gunner/darter/sniper
+	# and the grabber fraction does NOT rise past its 0.36
+	# curve share (the old everything-to-grabber rule would
+	# have dealt the grabber at 0.50).
+	var d174: SpawnDirector = SpawnDirector.new()
+	seed(72007)
+	var capped174: Dictionary = {
+		"hunter": d174.class_alive_cap("hunter", 400.0)}
+	var grabbers174: int = 0
+	var hunters174: int = 0
+	var gunners174: int = 0
+	for k174: int in range(2000):
+		var dealt174: String = d174.pick_next_type(400.0, capped174)
+		if dealt174 == "grabber":
+			grabbers174 += 1
+		elif dealt174 == "hunter":
+			hunters174 += 1
+		elif dealt174 == "gunner":
+			gunners174 += 1
+	d174.queue_free()
+	var grab_frac174: float = float(grabbers174) / 2000.0
+	var gun_frac174: float = float(gunners174) / 2000.0
+	_check("redistribution: hunters at cap at t=400 deal zero hunters; grabber fraction %.3f holds its 0.36 curve share while the gunner takes the spread at %.3f (curve 0.30)"
+		% [grab_frac174, gun_frac174],
+		hunters174 == 0 and grab_frac174 >= 0.33
+			and grab_frac174 <= 0.385 and gun_frac174 >= 0.34)
+
+	# (175) NEW (rebalance): the tow window at the director
+	# level. Two standalone directors run the same 180
+	# simulated seconds at t=100, rank 0.3, fed an empty
+	# field — one plain, one with the tow flag up for the
+	# whole run. The windowed director deals ZERO grabbers
+	# while the other classes keep flowing, and its deal
+	# count lands at ~1/1.5 of the plain count (the interval
+	# scale, read through counts).
+	var dw175a: SpawnDirector = SpawnDirector.new()
+	dw175a.spawn_requested.connect(_record_spawn)
+	seed(73011)
+	dw175a.start_run()
+	_dealt_types.clear()
+	for s175a: int in range(3600):
+		dw175a.step(0.05, 0, Vector2(640.0, 400.0), 0.3, {}, 100.0)
+	var deals_plain175: int = _dealt_types.size()
+	var dw175b: SpawnDirector = SpawnDirector.new()
+	dw175b.spawn_requested.connect(_record_spawn)
+	seed(73013)
+	dw175b.start_run()
+	_dealt_types.clear()
+	for s175b: int in range(3600):
+		dw175b.step(0.05, 0, Vector2(640.0, 400.0), 0.3, {}, 100.0,
+			true)
+	var grabbers_win175: int = 0
+	var gunners_win175: int = 0
+	for t175: String in _dealt_types:
+		if t175 == "grabber":
+			grabbers_win175 += 1
+		elif t175 == "gunner":
+			gunners_win175 += 1
+	var deals_win175: int = _dealt_types.size()
+	dw175a.queue_free()
+	dw175b.queue_free()
+	var ratio175: float = 0.0
+	if deals_win175 > 0:
+		ratio175 = float(deals_plain175) / float(deals_win175)
+	_check("tow window: %d plain deals vs %d windowed over the same 180s (ratio %.2f against the 1.5 interval scale); the window deals zero grabbers and %d gunners"
+		% [deals_plain175, deals_win175, ratio175, gunners_win175],
+		grabbers_win175 == 0 and gunners_win175 > 0
+			and ratio175 >= 1.28 and ratio175 <= 1.78)
+
+	# (176) NEW (rebalance): the tow window in the real scene,
+	# and its end. The director runs LIVE; a loose canister at
+	# the parked player's side latches the tow (the (157)
+	# staging, but with the stream on); while the tow lasts,
+	# every deal the live director makes is a non-grabber. The
+	# player then flies home, the deposit lands, and grabber
+	# deals resume in the following stream — no burst, just
+	# the normal mix returning.
+	game.start_run()
+	game.player.global_position = Vector2(320.0, 200.0)
+	game.player.invincible_t = 1000000000.0
+	var can176: Canister = game.canisters[0]
+	can176.set_loose(Vector2.ZERO)
+	can176.global_position = Vector2(300.0, 200.0)
+	game.director.spawn_requested.connect(_record_spawn)
+	var latched176: bool = false
+	for w176a: int in range(300):
+		game._physics_process(1.0 / 60.0)
+		if game.player.towed == can176:
+			latched176 = true
+			break
+	_dealt_types.clear()
+	var win_grabbers176: int = 0
+	var win_deals176: int = 0
+	var read176: int = 0
+	for w176b: int in range(480):
+		game._physics_process(1.0 / 60.0)
+		while read176 < _dealt_types.size():
+			if _dealt_types[read176] == "grabber":
+				win_grabbers176 += 1
+			read176 += 1
+		win_deals176 = _dealt_types.size()
+		if w176b % 30 == 29:
+			var field176: Array[Pirate] = game.pirates.duplicate()
+			for pf176: Pirate in field176:
+				game.kill_pirate(pf176, false)
+	game.player.global_position = Tuning.depot_center() \
+		+ Vector2(30.0, 0.0)
+	var deposited176: bool = false
+	for w176c: int in range(300):
+		game._physics_process(1.0 / 60.0)
+		if game.player.towed == null:
+			deposited176 = true
+			break
+	_dealt_types.clear()
+	read176 = 0
+	var resumed_grabbers176: int = 0
+	for w176d: int in range(1800):
+		game._physics_process(1.0 / 60.0)
+		while read176 < _dealt_types.size():
+			if _dealt_types[read176] == "grabber":
+				resumed_grabbers176 += 1
+			read176 += 1
+		if w176d % 30 == 29:
+			var field176b: Array[Pirate] = game.pirates.duplicate()
+			for pf176b: Pirate in field176b:
+				game.kill_pirate(pf176b, false)
+		if resumed_grabbers176 > 0 and w176d > 120:
+			break
+	game.director.spawn_requested.disconnect(_record_spawn)
+	_check("tow window (real scene): tow latches %s; %d deals during the tow include zero grabbers; the deposit lands %s and grabber deals resume in the following stream (%d)"
+		% [str(latched176), win_deals176, str(deposited176),
+			resumed_grabbers176],
+		latched176 and win_deals176 >= 3 and win_grabbers176 == 0
+			and deposited176 and resumed_grabbers176 > 0)
 
 	print("HARNESS: %d/%d checks passed" % [_passed, _passed + _failed])
 	get_tree().quit(0 if _failed == 0 else 1)
